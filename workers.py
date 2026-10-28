@@ -1,0 +1,322 @@
+"""
+Background worker threads for EngineeringHub.
+Encapsulates asynchronous actions (installation, uninstallation, status checks, and self-update)
+without blocking the PyQt graphical interface or opening external terminal windows.
+"""
+
+import os
+import sys
+import json
+import time
+import shutil
+import platform
+import subprocess
+import urllib.request
+import webbrowser
+from typing import List, Dict, Optional
+
+from PyQt6.QtCore import QThread, pyqtSignal
+
+from app_model import App, compare_versions
+import auth
+import network
+
+VERSION_URL = "https://raw.githubusercontent.com/william-short-git/AppLauncher/main/version.txt"
+APP_VERSION = "1.32"
+
+
+class AppActionWorker(QThread):
+    """
+    Worker thread that executes app installation, upgrade, or uninstallation.
+    Never opens external terminal windows. Uses SUDO_ASKPASS for silent privilege escalation.
+    """
+    progress = pyqtSignal(int)
+    finished_action = pyqtSignal(bool, str)  # (success, status_message)
+
+    def __init__(self, app: App, action: str):
+        super().__init__()
+        self.app = app
+        self.action = action  # 'install', 'upgrade', or 'uninstall'
+
+    def run(self):
+        try:
+            if self.action in ("install", "upgrade"):
+                self._handle_install_or_upgrade()
+            elif self.action == "uninstall":
+                self._handle_uninstall()
+            else:
+                self.finished_action.emit(False, f"Unknown action: {self.action}")
+        except Exception as e:
+            self.finished_action.emit(False, str(e))
+
+    def _handle_install_or_upgrade(self):
+        if self.app.source == "student":
+            url = self.app.url or "https://www.autodesk.com/education/edu-software/overview"
+            webbrowser.open(url)
+            self.finished_action.emit(True, "Opened student portal")
+            return
+
+        if self.app.source == "brew":
+            self._install_brew()
+        elif self.app.source == "github":
+            self._install_github()
+        else:
+            self.finished_action.emit(False, f"Unsupported source: {self.app.source}")
+
+    def _install_brew(self):
+        brew_bin = shutil.which("brew") or "/opt/homebrew/bin/brew" or "/usr/local/bin/brew"
+        if not os.path.exists(brew_bin):
+            self.finished_action.emit(False, "Homebrew binary not found")
+            return
+
+        env = auth.get_auth_env()
+        auth.prime_sudo()
+
+        brew_action = "reinstall" if self.action == "install" else "upgrade"
+        cmd = [brew_bin, brew_action, "--cask", self.app.cask]
+
+        self.progress.emit(0)
+        proc = subprocess.run(cmd, env=env, capture_output=True, text=True)
+
+        if self.app.is_installed() and proc.returncode == 0:
+            self.progress.emit(100)
+            self.finished_action.emit(True, "Installed successfully")
+            return
+
+        # Check for authentication errors
+        stderr_text = (proc.stderr or "").lower()
+        if "sudo" in stderr_text or "password" in stderr_text or "need sudo" in stderr_text:
+            if not auth.has_sudo_password():
+                self.finished_action.emit(False, "Password required in password.txt")
+            else:
+                self.finished_action.emit(False, "Auth failed with password.txt")
+        else:
+            # Check if app actually landed on disk
+            if self.app.is_installed():
+                self.finished_action.emit(True, "Installed successfully")
+            else:
+                err_msg = proc.stderr.strip() if proc.stderr else "Installation failed"
+                self.finished_action.emit(False, err_msg[:120])
+
+    def _install_github(self):
+        if not self.app.repo:
+            self.finished_action.emit(False, "Missing repository name")
+            return
+
+        release = network.get_latest_github_release(self.app.repo)
+        if not release:
+            self.finished_action.emit(False, "Could not fetch GitHub release")
+            return
+
+        dmg_url = None
+        arch = "arm64" if platform.machine() == "arm64" else "x86_64"
+
+        # Match architecture or mac/darwin
+        for asset in release.get("assets", []):
+            name = asset.get("name", "").lower()
+            if name.endswith(".dmg") and (arch in name or "mac" in name or "darwin" in name):
+                dmg_url = asset.get("browser_download_url")
+                break
+
+        if not dmg_url:
+            for asset in release.get("assets", []):
+                if asset.get("name", "").lower().endswith(".dmg"):
+                    dmg_url = asset.get("browser_download_url")
+                    break
+
+        if not dmg_url:
+            self.finished_action.emit(False, "No macOS DMG found in release assets")
+            return
+
+        temp_dmg = f"/tmp/{self.app.app_name}_{int(time.time())}.dmg"
+
+        def reporthook(count, block_size, total_size):
+            if total_size > 0:
+                p = int(count * block_size * 100 / total_size)
+                self.progress.emit(min(p, 95))
+
+        mount_point = f"/tmp/eh_mount_{self.app.app_name}_{int(time.time())}"
+        try:
+            req = urllib.request.Request(dmg_url, headers={"User-Agent": "EngineeringHub/1.32"})
+            with urllib.request.urlopen(req) as resp, open(temp_dmg, "wb") as out_file:
+                total_size = int(resp.headers.get("Content-Length", 0))
+                downloaded = 0
+                block_size = 65536
+                while True:
+                    chunk = resp.read(block_size)
+                    if not chunk:
+                        break
+                    out_file.write(chunk)
+                    downloaded += len(chunk)
+                    reporthook(downloaded // block_size, block_size, total_size)
+
+            self.progress.emit(98)
+            os.makedirs(mount_point, exist_ok=True)
+            subprocess.run(
+                ["hdiutil", "attach", temp_dmg, "-mountpoint", mount_point, "-nobrowse", "-quiet"],
+                check=True
+            )
+
+            found_app_path = None
+            for root, dirs, _ in os.walk(mount_point):
+                for d in dirs:
+                    if d.endswith(".app"):
+                        found_app_path = os.path.join(root, d)
+                        break
+                if found_app_path:
+                    break
+
+            if not found_app_path:
+                self.finished_action.emit(False, "No .app bundle found inside DMG")
+                return
+
+            dest_app_path = f"/Applications/{os.path.basename(found_app_path)}"
+            if os.path.exists(dest_app_path):
+                try:
+                    shutil.rmtree(dest_app_path)
+                except Exception:
+                    auth.run_sudo(["rm", "-rf", dest_app_path])
+
+            try:
+                subprocess.run(["cp", "-R", found_app_path, "/Applications/"], check=True)
+            except Exception:
+                auth.run_sudo(["cp", "-R", found_app_path, "/Applications/"])
+
+            self.progress.emit(100)
+            if self.app.is_installed():
+                self.finished_action.emit(True, "Installed successfully")
+            else:
+                self.finished_action.emit(False, "Failed to copy application bundle")
+
+        finally:
+            subprocess.run(["hdiutil", "detach", mount_point, "-quiet", "-force"], capture_output=True)
+            if os.path.exists(mount_point):
+                shutil.rmtree(mount_point, ignore_errors=True)
+            if os.path.exists(temp_dmg):
+                try:
+                    os.remove(temp_dmg)
+                except Exception:
+                    pass
+
+    def _handle_uninstall(self):
+        """Uninstalls the application silently without opening Terminal."""
+        if self.app.source == "brew":
+            brew_bin = shutil.which("brew") or "/opt/homebrew/bin/brew" or "/usr/local/bin/brew"
+            env = auth.get_auth_env()
+            auth.prime_sudo()
+            cmd = [brew_bin, "uninstall", "--cask", "--force", self.app.cask]
+            subprocess.run(cmd, env=env, capture_output=True, text=True)
+
+        # Ensure filesystem bundle is removed
+        app_path = self.app.find_app_path()
+        if app_path and os.path.exists(app_path):
+            try:
+                shutil.rmtree(app_path)
+            except Exception:
+                auth.run_sudo(["rm", "-rf", app_path])
+
+        if not self.app.is_installed():
+            self.finished_action.emit(True, "Uninstalled successfully")
+        else:
+            self.finished_action.emit(False, "Could not completely delete app files")
+
+
+class StatusCheckWorker(QThread):
+    """
+    Scans Homebrew casks and filesystem to verify which applications are installed
+    and which have updates available.
+    """
+    finished_check = pyqtSignal(dict)  # {app_name: status_str}
+
+    def __init__(self, apps: List[App]):
+        super().__init__()
+        self.apps = apps
+
+    def run(self):
+        brew_bin = shutil.which("brew") or "/opt/homebrew/bin/brew" or "/usr/local/bin/brew"
+        online = network.is_connected(timeout=1.5)
+
+        installed_casks = set()
+        outdated_casks = {}
+
+        if online and os.path.exists(brew_bin):
+            try:
+                list_proc = subprocess.run(
+                    [brew_bin, "list", "--cask", "-1"],
+                    capture_output=True,
+                    text=True,
+                    timeout=5
+                )
+                if list_proc.returncode == 0:
+                    installed_casks = set(list_proc.stdout.splitlines())
+            except Exception:
+                pass
+
+            try:
+                outdated_proc = subprocess.run(
+                    [brew_bin, "outdated", "--cask", "--json=v2"],
+                    capture_output=True,
+                    text=True,
+                    timeout=8
+                )
+                if outdated_proc.returncode == 0:
+                    outdated_data = json.loads(outdated_proc.stdout)
+                    outdated_casks = {
+                        item["name"]: item.get("current_version")
+                        for item in outdated_data.get("casks", [])
+                    }
+            except Exception:
+                pass
+
+        statuses = {}
+        for app in self.apps:
+            statuses[app.name] = app.check_status(installed_casks, outdated_casks, is_online=online)
+
+        self.finished_check.emit(statuses)
+
+
+class LauncherCheckWorker(QThread):
+    """Periodically queries GitHub for newer versions of EngineeringHub."""
+    update_available = pyqtSignal(str)
+
+    def run(self):
+        if not network.is_connected(timeout=1.5):
+            return
+
+        remote_version = network.get_remote_version(VERSION_URL)
+        if remote_version:
+            try:
+                if compare_versions(remote_version, APP_VERSION) > 0:
+                    self.update_available.emit(remote_version)
+            except Exception:
+                pass
+
+
+class LauncherBuilderWorker(QThread):
+    """Pulls git updates and recompiles the launcher using PyInstaller."""
+    progress = pyqtSignal(int)
+    finished_build = pyqtSignal(bool)
+
+    def run(self):
+        repo_dir = os.path.expanduser("~/EngineeringHub")
+        try:
+            self.progress.emit(20)
+            subprocess.run(["git", "pull", "origin", "main"], cwd=repo_dir, check=True, capture_output=True)
+            self.progress.emit(50)
+            pyinstaller_bin = os.path.join(repo_dir, "venv", "bin", "pyinstaller")
+            if not os.path.exists(pyinstaller_bin):
+                pyinstaller_bin = shutil.which("pyinstaller") or "pyinstaller"
+
+            env = os.environ.copy()
+            env["PYINSTALLER_CONFIG_DIR"] = "/tmp/pyinstaller"
+            subprocess.run(
+                [pyinstaller_bin, "--windowed", "--name", "EngineeringHub", "--noconfirm", "hub.py"],
+                cwd=repo_dir,
+                env=env,
+                check=True,
+                capture_output=True
+            )
+            self.progress.emit(100)
+            self.finished_build.emit(True)
+        except Exception:
+            self.finished_build.emit(False)

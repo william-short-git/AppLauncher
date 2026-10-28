@@ -3,3 +3,10 @@ dist/
 *.spec
 .DS_Store
 venv/
+__pycache__/
+*.pyc
+password.txt
+.password
+sudo_password.txt
+*.pass
+*.secret

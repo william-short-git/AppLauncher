@@ -1,173 +1,46 @@
+"""
+EngineeringHub (AppLauncher) - Main Desktop Application
+Adobe Creative Cloud-style launcher for macOS engineering software.
+"""
+
 import sys
 import os
-import json
-import time
-import shutil
-import platform
 import subprocess
-import urllib.request
-import webbrowser
+from typing import List
+
 from PyQt6.QtWidgets import (
-    QApplication, QMainWindow, QWidget, QVBoxLayout, 
+    QApplication, QMainWindow, QWidget, QVBoxLayout,
     QHBoxLayout, QLabel, QPushButton, QFrame, QScrollArea, QProgressBar
 )
-from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer
+from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QPixmap
 
-APP_VERSION = "1.31"
-VERSION_URL = "https://raw.githubusercontent.com/william-short-git/AppLauncher/main/version.txt"
+from apps_config import APPS
+from app_model import App
+import auth
+import network
+from workers import (
+    AppActionWorker, StatusCheckWorker, LauncherCheckWorker, LauncherBuilderWorker,
+    APP_VERSION
+)
 
-APPS = [
-    {"name": "Visual Studio Code", "icon": "💻", "icon_path": "icons/vscode.png", "category": "Development", "app_name": "Visual Studio Code", "cask": "visual-studio-code", "source": "brew", "desc": "Code editing, debugging, and extension ecosystem"},
-    {"name": "KiCad", "icon": "🔌", "icon_path": "icons/kicad.png", "category": "EDA / PCB Design", "app_name": "KiCad", "cask": "kicad", "source": "github", "repo": "KiCad/kicad-mac-builder", "desc": "Schematic capture (Updates pulled from GitHub releases)"},
-    {"name": "LTspice", "icon": "⚡", "icon_path": "icons/ltspice.png", "category": "Simulation", "app_name": "LTspice", "cask": "ltspice", "source": "brew", "desc": "High-performance SPICE simulation and circuit analysis"},
-    {"name": "Autodesk Fusion", "icon": "🏗️", "icon_path": "icons/fusion.png", "category": "CAD / CAM", "app_name": "Autodesk Fusion 360", "cask": "autodesk-fusion", "source": "student", "desc": "Managed securely via Autodesk Education portal"},
-    {"name": "FreeCAD", "icon": "🛠️", "icon_path": "icons/freecad.png", "category": "Open-Source CAD", "app_name": "FreeCAD", "cask": "freecad", "source": "github", "repo": "FreeCAD/FreeCAD", "desc": "Parametric 3D modeler (Updates pulled from GitHub)"},
-]
-
-class GithubDownloadThread(QThread):
-    progress = pyqtSignal(int)
-    finished_action = pyqtSignal(bool)
-
-    def __init__(self, repo, app_name):
-        super().__init__()
-        self.repo = repo
-        self.app_name = app_name
-
-    def run(self):
-        try:
-            url = f"https://api.github.com/repos/{self.repo}/releases/latest"
-            req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-            data = json.loads(urllib.request.urlopen(req).read())
-            
-            dmg_url = None
-            arch = "arm64" if platform.machine() == "arm64" else "x86_64"
-            for asset in data.get("assets", []):
-                name = asset["name"].lower()
-                if name.endswith(".dmg") and (arch in name or "mac" in name or "darwin" in name):
-                    dmg_url = asset["browser_download_url"]
-                    break
-            
-            if not dmg_url:
-                for asset in data.get("assets", []):
-                    if asset["name"].lower().endswith(".dmg"):
-                        dmg_url = asset["browser_download_url"]
-                        break
-            
-            if not dmg_url:
-                self.finished_action.emit(False)
-                return
-
-            temp_dmg = f"/tmp/{self.app_name}.dmg"
-            def reporthook(count, block_size, total_size):
-                if total_size > 0:
-                    p = int(count * block_size * 100 / total_size)
-                    self.progress.emit(min(p, 100))
-            
-            urllib.request.urlretrieve(dmg_url, temp_dmg, reporthook)
-            self.progress.emit(100)
-
-            mount_point = f"/Volumes/{self.app_name}_mount"
-            subprocess.run(["hdiutil", "attach", temp_dmg, "-mountpoint", mount_point, "-nobrowse", "-quiet"], check=True)
-
-            app_path = f"/Applications/{self.app_name}.app"
-            if os.path.exists(app_path):
-                shutil.rmtree(app_path) 
-            
-            for item in os.listdir(mount_point):
-                if item.endswith(".app"):
-                    subprocess.run(["cp", "-R", os.path.join(mount_point, item), "/Applications/"], check=True)
-                    break
-            
-            subprocess.run(["hdiutil", "detach", mount_point, "-quiet"], check=True)
-            self.finished_action.emit(True)
-        except Exception:
-            self.finished_action.emit(False)
-
-class BrewActionThread(QThread):
-    finished_action = pyqtSignal(bool)
-
-    def __init__(self, action, cask):
-        super().__init__()
-        self.action = action 
-        self.cask = cask
-
-    def run(self):
-        brew_bin = shutil.which("brew") or "/opt/homebrew/bin/brew" or "/usr/local/bin/brew"
-        try:
-            subprocess.run([brew_bin, self.action, "--cask", self.cask], check=True, capture_output=True)
-            self.finished_action.emit(True)
-        except subprocess.CalledProcessError:
-            self.finished_action.emit(False)
-
-class LauncherBuilderThread(QThread):
-    progress = pyqtSignal(int)
-    finished_build = pyqtSignal(bool)
-
-    def run(self):
-        try:
-            self.progress.emit(20)
-            subprocess.run(["git", "pull", "origin", "main"], cwd=os.path.expanduser("~/EngineeringHub"), check=True, capture_output=True)
-            self.progress.emit(50)
-            subprocess.run(["./venv/bin/pyinstaller", "--windowed", "--name", "EngineeringHub", "--noconfirm", "hub.py"], cwd=os.path.expanduser("~/EngineeringHub"), check=True, capture_output=True)
-            self.progress.emit(100)
-            self.finished_build.emit(True)
-        except Exception:
-            self.finished_build.emit(False)
-
-class LauncherCheckThread(QThread):
-    update_available = pyqtSignal(str)
-
-    def run(self):
-        try:
-            req = urllib.request.Request(f"{VERSION_URL}?t={time.time()}", headers={'Cache-Control': 'no-cache', 'User-Agent': 'Mozilla/5.0'})
-            remote_version = urllib.request.urlopen(req, timeout=3).read().decode('utf-8').strip()
-            if float(remote_version) > float(APP_VERSION):
-                self.update_available.emit(remote_version)
-        except Exception:
-            pass 
-
-class BrewCheckThread(QThread):
-    finished_check = pyqtSignal(dict)
-
-    def run(self):
-        brew_bin = shutil.which("brew") or "/opt/homebrew/bin/brew" or "/usr/local/bin/brew"
-        try:
-            installed = subprocess.run([brew_bin, "list", "--cask", "-1"], capture_output=True, text=True).stdout.splitlines()
-            outdated_data = json.loads(subprocess.run([brew_bin, "outdated", "--cask", "--json=v2"], capture_output=True, text=True).stdout)
-            outdated = {item["name"]: item["current_version"] for item in outdated_data.get("casks", [])}
-
-            statuses = {}
-            for app in APPS:
-                if app["source"] == "brew":
-                    cask = app["cask"]
-                    if cask not in installed:
-                        statuses[app["name"]] = "missing"
-                    elif cask in outdated:
-                        statuses[app["name"]] = "outdated"
-                    else:
-                        statuses[app["name"]] = "installed"
-                elif app["source"] in ["github", "student"]:
-                    if not os.path.exists(f"/Applications/{app['app_name']}.app"):
-                        statuses[app["name"]] = "missing"
-                    else:
-                        statuses[app["name"]] = "installed" 
-            self.finished_check.emit(statuses)
-        except Exception:
-            self.finished_check.emit({})
 
 class AppCard(QFrame):
-    def __init__(self, app_info):
+    """Card widget representing a single managed application and its controls."""
+
+    def __init__(self, app: App):
         super().__init__()
-        self.app_info = app_info
+        self.app = app
         self.is_working = False
+        self.worker: AppActionWorker = None
+
         self.setObjectName("AppCard")
         self.setFixedHeight(95)
 
         main_layout = QVBoxLayout(self)
         main_layout.setContentsMargins(18, 14, 18, 14)
         main_layout.setSpacing(8)
-        
+
         top_layout = QHBoxLayout()
         top_layout.setSpacing(14)
 
@@ -175,19 +48,21 @@ class AppCard(QFrame):
         icon_frame.setFixedSize(40, 40)
         icon_frame.setStyleSheet("background-color: #27272A; border-radius: 8px;")
         icon_layout = QVBoxLayout(icon_frame)
-        icon_layout.setContentsMargins(0,0,0,0)
-        
+        icon_layout.setContentsMargins(0, 0, 0, 0)
+
         icon_label = QLabel()
         icon_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        
-        icon_path = os.path.expanduser(f"~/EngineeringHub/{app_info.get('icon_path', '')}")
+
+        icon_path = os.path.expanduser(f"~/EngineeringHub/{self.app.icon_path}")
         if os.path.exists(icon_path):
-            pixmap = QPixmap(icon_path).scaled(32, 32, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+            pixmap = QPixmap(icon_path).scaled(
+                32, 32, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation
+            )
             icon_label.setPixmap(pixmap)
         else:
-            icon_label.setText(app_info["icon"])
+            icon_label.setText(self.app.icon)
             icon_label.setStyleSheet("font-size: 20px; background: transparent;")
-            
+
         icon_layout.addWidget(icon_label)
         top_layout.addWidget(icon_frame)
 
@@ -195,15 +70,18 @@ class AppCard(QFrame):
         text_layout.setSpacing(3)
         title_row = QHBoxLayout()
         title_row.setSpacing(8)
-        self.name_label = QLabel(app_info["name"])
+
+        self.name_label = QLabel(self.app.name)
         self.name_label.setObjectName("AppName")
         title_row.addWidget(self.name_label)
-        self.badge = QLabel(app_info["category"])
+
+        self.badge = QLabel(self.app.category)
         self.badge.setObjectName("Badge")
         title_row.addWidget(self.badge)
         title_row.addStretch()
         text_layout.addLayout(title_row)
-        self.desc_label = QLabel(app_info["desc"])
+
+        self.desc_label = QLabel(self.app.desc)
         self.desc_label.setObjectName("AppDesc")
         text_layout.addWidget(self.desc_label)
         top_layout.addLayout(text_layout, stretch=1)
@@ -235,117 +113,177 @@ class AppCard(QFrame):
         self.progress_bar.setFixedHeight(4)
         self.progress_bar.setTextVisible(False)
         self.progress_bar.setVisible(False)
-        self.progress_bar.setStyleSheet("QProgressBar { background-color: #27272A; border: none; border-radius: 2px; } QProgressBar::chunk { background-color: #10B981; border-radius: 2px; }")
+        self.progress_bar.setStyleSheet(
+            "QProgressBar { background-color: #27272A; border: none; border-radius: 2px; } "
+            "QProgressBar::chunk { background-color: #10B981; border-radius: 2px; }"
+        )
         main_layout.addWidget(self.progress_bar)
 
-        self.auth_timer = QTimer()
-        self.auth_timer.timeout.connect(self.check_auth_success)
-
     def launch_app(self):
-        subprocess.Popen(["open", "-a", self.app_info["app_name"]])
+        self.app.launch()
 
-    def set_status(self, status):
-        if self.is_working: return
+    def set_status(self, status: str):
+        """
+        Updates button states according to application status.
+        Crucial: Never display the launch button if the application is not installed on disk.
+        """
+        if self.is_working:
+            return
+
+        self.progress_bar.setVisible(False)
         self.action_btn.setEnabled(True)
         self.delete_btn.setEnabled(True)
-        self.progress_bar.setVisible(False)
-        
+
         if status == "missing":
             self.action_btn.setVisible(True)
-            self.action_btn.setText("Student Portal" if self.app_info["source"] == "student" else "Install")
-            self.action_btn.setStyleSheet("QPushButton { background-color: #059669; color: white; } QPushButton:hover { background-color: #047857; }")
+            self.action_btn.setText("Student Portal" if self.app.is_student else "Install")
+            self.action_btn.setStyleSheet(
+                "QPushButton { background-color: #059669; color: white; } "
+                "QPushButton:hover { background-color: #047857; }"
+            )
             self.launch_btn.setVisible(False)
             self.delete_btn.setVisible(False)
-        elif status == "outdated":
-            self.action_btn.setVisible(True)
-            self.action_btn.setText("Update")
-            self.action_btn.setStyleSheet("QPushButton { background-color: #B45309; color: #FEF3C7; } QPushButton:hover { background-color: #92400E; }")
-            self.launch_btn.setVisible(True)
-            self.delete_btn.setVisible(True)
-        else:
-            self.action_btn.setVisible(False)
-            self.launch_btn.setVisible(True)
-            self.delete_btn.setVisible(True)
 
-    def update_progress(self, val):
-        if val == 100:
+        elif status == "outdated":
+            if self.app.is_installed():
+                self.action_btn.setVisible(True)
+                self.action_btn.setText("Update")
+                self.action_btn.setStyleSheet(
+                    "QPushButton { background-color: #B45309; color: #FEF3C7; } "
+                    "QPushButton:hover { background-color: #92400E; }"
+                )
+                self.launch_btn.setVisible(True)
+                self.delete_btn.setVisible(True)
+            else:
+                self.set_status("missing")
+
+        elif status == "installed":
+            if self.app.is_installed():
+                self.action_btn.setVisible(False)
+                self.launch_btn.setVisible(True)
+                self.delete_btn.setVisible(True)
+            else:
+                self.set_status("missing")
+
+        else:
+            # Fallback for unknown / error status
+            if self.app.is_installed():
+                self.action_btn.setVisible(False)
+                self.launch_btn.setVisible(True)
+                self.delete_btn.setVisible(True)
+            else:
+                self.set_status("missing")
+
+    def update_progress(self, val: int):
+        if val >= 100:
             self.progress_bar.setRange(0, 0)
         else:
             self.progress_bar.setRange(0, 100)
             self.progress_bar.setValue(val)
 
     def run_action(self):
-        if self.app_info["source"] == "student":
-            webbrowser.open("https://www.autodesk.com/education/edu-software/overview")
+        if self.app.is_student:
+            self.worker = AppActionWorker(self.app, "install")
+            self.worker.start()
             return
 
         self.is_working = True
-        self.action_btn.setEnabled(False)
-        self.delete_btn.setEnabled(False)
-        action = "install" if self.action_btn.text() == "Install" else "upgrade"
+        # Immediately hide launch and delete buttons while operation is in progress
+        self.launch_btn.setVisible(False)
+        self.delete_btn.setVisible(False)
+
+        is_install = self.action_btn.text() in ("Install", "Student Portal", "Retry Install", "Needs Auth", "Needs Password")
+        action = "install" if is_install else "upgrade"
         self.action_btn.setText(f"{action.title()}ing...")
-        
+        self.action_btn.setEnabled(False)
+        self.action_btn.setStyleSheet("QPushButton { background-color: #3F3F46; color: white; }")
+
         self.progress_bar.setVisible(True)
-        
-        if self.app_info["source"] == "github":
+        if self.app.source == "github":
             self.progress_bar.setRange(0, 100)
             self.progress_bar.setValue(0)
-            self.thread = GithubDownloadThread(self.app_info["repo"], self.app_info["app_name"])
-            self.thread.progress.connect(self.update_progress)
         else:
             self.progress_bar.setRange(0, 0)
-            self.thread = BrewActionThread(action, self.app_info["cask"])
-            
-        self.thread.finished_action.connect(self.on_action_finished)
-        self.thread.start()
+
+        self.worker = AppActionWorker(self.app, action)
+        if self.app.source == "github":
+            self.worker.progress.connect(self.update_progress)
+        self.worker.finished_action.connect(self.on_action_finished)
+        self.worker.start()
 
     def run_delete(self):
         self.is_working = True
+        # Immediately hide launch and delete buttons
+        self.launch_btn.setVisible(False)
+        self.delete_btn.setVisible(False)
+
         self.action_btn.setVisible(True)
         self.action_btn.setText("Uninstalling...")
         self.action_btn.setStyleSheet("QPushButton { background-color: #3F3F46; color: white; }")
         self.action_btn.setEnabled(False)
-        self.delete_btn.setEnabled(False)
-        self.launch_btn.setVisible(False)
-        
-        if self.app_info["source"] == "brew":
-            cmd = f"brew uninstall --cask {self.app_info['cask']} && exit"
-            subprocess.Popen(["osascript", "-e", f'tell application "Terminal" to do script "{cmd}"'])
-            QTimer.singleShot(5000, lambda: [setattr(self, 'is_working', False), self.set_status("missing")])
-        else:
-            app_path = f"/Applications/{self.app_info['app_name']}.app"
-            subprocess.run(["rm", "-rf", app_path])
-            self.is_working = False
-            self.set_status("missing")
 
-    def on_action_finished(self, success):
+        self.progress_bar.setVisible(True)
+        self.progress_bar.setRange(0, 0)
+
+        self.worker = AppActionWorker(self.app, "uninstall")
+        self.worker.finished_action.connect(self.on_uninstall_finished)
+        self.worker.start()
+
+    def on_action_finished(self, success: bool, message: str):
+        self.is_working = False
+        self.progress_bar.setVisible(False)
+
         if success:
-            self.is_working = False
-            self.set_status("installed")
-        else:
-            if self.app_info["source"] == "brew":
-                self.action_btn.setText("Needs Auth")
-                self.action_btn.setStyleSheet("QPushButton { background-color: #DC2626; color: white; }")
-                self.action_btn.setEnabled(True)
-                cmd = f"brew install --cask {self.app_info['cask']} && exit"
-                subprocess.Popen(["osascript", "-e", f'tell application "Terminal" to do script "{cmd}"'])
-                self.auth_timer.start(3000)
+            if self.app.is_installed():
+                self.set_status("installed")
             else:
-                self.is_working = False
+                self.set_status("missing")
+        else:
+            # Action failed: under NO circumstances should the Open button appear!
+            self.launch_btn.setVisible(False)
+            self.delete_btn.setVisible(False)
+
+            if "password" in message.lower() or "auth" in message.lower():
+                self.action_btn.setVisible(True)
+                self.action_btn.setEnabled(True)
+                self.action_btn.setText("Needs Password" if not auth.has_sudo_password() else "Auth Failed")
+                self.action_btn.setStyleSheet("QPushButton { background-color: #DC2626; color: white; }")
+                self.action_btn.setToolTip(message)
+            else:
+                if self.app.is_installed():
+                    self.set_status("outdated")
+                else:
+                    self.action_btn.setVisible(True)
+                    self.action_btn.setEnabled(True)
+                    self.action_btn.setText("Retry Install")
+                    self.action_btn.setStyleSheet("QPushButton { background-color: #DC2626; color: white; }")
+                    self.action_btn.setToolTip(message)
+
+    def on_uninstall_finished(self, success: bool, message: str):
+        self.is_working = False
+        self.progress_bar.setVisible(False)
+
+        if success and not self.app.is_installed():
+            self.set_status("missing")
+        else:
+            if self.app.is_installed():
+                self.set_status("installed")
+            else:
                 self.set_status("missing")
 
-    def check_auth_success(self):
-        brew_bin = shutil.which("brew") or "/opt/homebrew/bin/brew" or "/usr/local/bin/brew"
-        if self.app_info["cask"] in subprocess.run([brew_bin, "list", "--cask", "-1"], capture_output=True, text=True).stdout.splitlines():
-            self.auth_timer.stop()
-            self.is_working = False
-            self.set_status("installed")
 
 class HubWindow(QMainWindow):
+    """Main application window for EngineeringHub."""
+
     def __init__(self):
         super().__init__()
         self.setWindowTitle(f"Engineering Hub v{APP_VERSION}")
         self.setFixedSize(680, 560)
+
+        self.apps: List[App] = [App(data) for data in APPS]
+        self.check_thread: StatusCheckWorker = None
+        self.launcher_thread: LauncherCheckWorker = None
+        self.build_thread: LauncherBuilderWorker = None
 
         central = QWidget()
         self.setCentralWidget(central)
@@ -353,6 +291,7 @@ class HubWindow(QMainWindow):
         main_layout.setContentsMargins(28, 24, 28, 24)
         main_layout.setSpacing(20)
 
+        # Header
         header = QHBoxLayout()
         header_text = QVBoxLayout()
         header_text.setSpacing(2)
@@ -379,19 +318,22 @@ class HubWindow(QMainWindow):
         self.launcher_progress.setFixedHeight(4)
         self.launcher_progress.setTextVisible(False)
         self.launcher_progress.setVisible(False)
-        self.launcher_progress.setStyleSheet("QProgressBar { background-color: #27272A; border: none; border-radius: 2px; } QProgressBar::chunk { background-color: #10B981; border-radius: 2px; }")
+        self.launcher_progress.setStyleSheet(
+            "QProgressBar { background-color: #27272A; border: none; border-radius: 2px; } "
+            "QProgressBar::chunk { background-color: #10B981; border-radius: 2px; }"
+        )
         launcher_box.addWidget(self.launcher_progress)
-        
         header.addLayout(launcher_box)
 
         self.check_btn = QPushButton("Check Updates")
         self.check_btn.setObjectName("PrimaryActionBtn")
         self.check_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.check_btn.clicked.connect(self.start_check)
+        self.check_btn.clicked.connect(lambda: self.start_check(is_periodic=False))
         header.addWidget(self.check_btn)
 
         main_layout.addLayout(header)
 
+        # Scroll Area for Application Cards
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
@@ -402,8 +344,8 @@ class HubWindow(QMainWindow):
         self.card_layout.setContentsMargins(0, 0, 0, 0)
         self.card_layout.setSpacing(10)
 
-        self.cards = []
-        for app in APPS:
+        self.cards: List[AppCard] = []
+        for app in self.apps:
             card = AppCard(app)
             self.cards.append(card)
             self.card_layout.addWidget(card)
@@ -412,20 +354,45 @@ class HubWindow(QMainWindow):
         scroll.setWidget(scroll_content)
         main_layout.addWidget(scroll)
 
+        # Bottom status bar
         bottom_bar = QHBoxLayout()
         self.status_label = QLabel("Tools managed via Homebrew & GitHub")
         self.status_label.setObjectName("StatusLabel")
         bottom_bar.addWidget(self.status_label)
         bottom_bar.addStretch()
         main_layout.addLayout(bottom_bar)
+
         self.apply_theme()
 
-        self.launcher_thread = LauncherCheckThread()
+        # Check for launcher updates
+        self.start_launcher_check()
+
+        # Initial check for application statuses
+        self.start_check(is_periodic=False)
+
+        # 2-Minute Background Update Check Timer
+        # Checks for updates every 2 minutes if connected to the internet
+        self.auto_check_timer = QTimer(self)
+        self.auto_check_timer.setInterval(2 * 60 * 1000)  # 2 minutes = 120,000 ms
+        self.auto_check_timer.timeout.connect(self.on_periodic_timer)
+        self.auto_check_timer.start()
+
+    def on_periodic_timer(self):
+        """Triggered every 2 minutes; performs update scan if connected to the internet."""
+        if network.is_connected(timeout=2.0):
+            self.start_launcher_check()
+            self.start_check(is_periodic=True)
+        else:
+            self.status_label.setText("Offline — periodic update check paused until reconnected.")
+
+    def start_launcher_check(self):
+        if self.launcher_thread and self.launcher_thread.isRunning():
+            return
+        self.launcher_thread = LauncherCheckWorker()
         self.launcher_thread.update_available.connect(self.show_launcher_update)
         self.launcher_thread.start()
-        self.start_check()
 
-    def show_launcher_update(self, new_version):
+    def show_launcher_update(self, new_version: str):
         self.launcher_update_btn.setText(f"Update Hub to v{new_version}")
         self.launcher_update_btn.setVisible(True)
 
@@ -434,23 +401,62 @@ class HubWindow(QMainWindow):
         self.launcher_update_btn.setEnabled(False)
         self.launcher_progress.setVisible(True)
         self.launcher_progress.setValue(0)
-        
-        self.build_thread = LauncherBuilderThread()
+
+        self.build_thread = LauncherBuilderWorker()
         self.build_thread.progress.connect(self.launcher_progress.setValue)
         self.build_thread.finished_build.connect(self.finalize_self_update)
         self.build_thread.start()
 
-    def finalize_self_update(self, success):
+    def finalize_self_update(self, success: bool):
         if success:
             script_path = "/tmp/update_hub.sh"
             with open(script_path, "w") as f:
-                f.write("#!/bin/bash\nrm -rf /Applications/EngineeringHub.app\ncp -r ~/EngineeringHub/dist/EngineeringHub.app /Applications/\nopen -a EngineeringHub\n")
+                f.write(
+                    "#!/bin/bash\n"
+                    "rm -rf /Applications/EngineeringHub.app\n"
+                    "cp -r ~/EngineeringHub/dist/EngineeringHub.app /Applications/\n"
+                    "open -a EngineeringHub\n"
+                )
             os.chmod(script_path, 0o755)
             subprocess.Popen([script_path], start_new_session=True)
             sys.exit()
         else:
             self.launcher_update_btn.setText("Update Failed")
             self.launcher_progress.setVisible(False)
+
+    def start_check(self, is_periodic: bool = False):
+        if self.check_thread and self.check_thread.isRunning():
+            return
+
+        if not is_periodic:
+            self.check_btn.setEnabled(False)
+            self.check_btn.setText("Scanning...")
+            self.status_label.setText("Querying Homebrew repository & installed applications...")
+
+        self.check_thread = StatusCheckWorker(self.apps)
+        self.check_thread.finished_check.connect(lambda statuses: self.on_check_finished(statuses, is_periodic))
+        self.check_thread.start()
+
+    def on_check_finished(self, statuses: dict, is_periodic: bool = False):
+        self.check_btn.setEnabled(True)
+        self.check_btn.setText("Check Updates")
+
+        updates, missing = 0, 0
+        for card in self.cards:
+            status = statuses.get(card.app.name, "missing")
+            card.set_status(status)
+            if not card.is_working:
+                if status == "outdated":
+                    updates += 1
+                elif status == "missing":
+                    missing += 1
+
+        if updates > 0:
+            self.status_label.setText(f"Found {updates} pending update(s).")
+        elif missing > 0:
+            self.status_label.setText(f"Up to date. {missing} app(s) are not installed.")
+        else:
+            self.status_label.setText("All engineering tools are installed and up to date.")
 
     def apply_theme(self):
         self.setStyleSheet("""
@@ -477,29 +483,6 @@ class HubWindow(QMainWindow):
             QScrollBar::handle:vertical { background: #27272A; border-radius: 3px; min-height: 20px; }
         """)
 
-    def start_check(self):
-        self.check_btn.setEnabled(False)
-        self.check_btn.setText("Scanning...")
-        self.status_label.setText("Querying Homebrew package repository...")
-        self.thread = BrewCheckThread()
-        self.thread.finished_check.connect(self.on_check_finished)
-        self.thread.start()
-
-    def on_check_finished(self, statuses):
-        self.check_btn.setEnabled(True)
-        self.check_btn.setText("Check Updates")
-        
-        updates, missing = 0, 0
-        for card in self.cards:
-            status = statuses.get(card.app_info["name"], "unknown")
-            card.set_status(status)
-            if not card.is_working:
-                if status == "outdated": updates += 1
-                elif status == "missing": missing += 1
-
-        if updates > 0: self.status_label.setText(f"Found {updates} pending update(s).")
-        elif missing > 0: self.status_label.setText(f"Up to date. {missing} app(s) are not installed.")
-        else: self.status_label.setText("All engineering tools are installed and up to date.")
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
