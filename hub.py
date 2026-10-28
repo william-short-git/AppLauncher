@@ -11,7 +11,7 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
 
-APP_VERSION = "1.1"
+APP_VERSION = "1.2"
 VERSION_URL = "https://raw.githubusercontent.com/william-short-git/AppLauncher/main/version.txt"
 
 APPS = [
@@ -27,7 +27,7 @@ class BrewActionThread(QThread):
 
     def __init__(self, action, cask):
         super().__init__()
-        self.action = action # "install" or "upgrade"
+        self.action = action 
         self.cask = cask
 
     def run(self):
@@ -81,6 +81,8 @@ class AppCard(QFrame):
     def __init__(self, app_info):
         super().__init__()
         self.app_info = app_info
+        self.is_working = False
+        self.current_action = ""
         self.setObjectName("AppCard")
         self.setFixedHeight(82)
 
@@ -120,6 +122,7 @@ class AppCard(QFrame):
         self.launch_btn = QPushButton("Open")
         self.launch_btn.setObjectName("LaunchBtn")
         self.launch_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.launch_btn.setVisible(False)
         self.launch_btn.clicked.connect(self.launch_app)
         layout.addWidget(self.launch_btn)
 
@@ -127,42 +130,52 @@ class AppCard(QFrame):
         subprocess.Popen(["open", "-a", self.app_info["app_name"]])
 
     def set_status(self, status):
+        # BUG 2 FIX: Do not override the UI state if this app is currently being worked on
+        if self.is_working:
+            return
+
         if status == "missing":
             self.action_btn.setVisible(True)
             self.action_btn.setText("Install")
             self.action_btn.setStyleSheet("QPushButton { background-color: #059669; color: white; font-size: 12px; font-weight: 600; border-radius: 6px; padding: 6px 12px; border: none; } QPushButton:hover { background-color: #047857; }")
             self.launch_btn.setVisible(False)
+            self.action_btn.setEnabled(True)
         elif status == "outdated":
             self.action_btn.setVisible(True)
             self.action_btn.setText("Update")
             self.action_btn.setStyleSheet("QPushButton { background-color: #B45309; color: #FEF3C7; font-size: 12px; font-weight: 600; border-radius: 6px; padding: 6px 12px; border: none; } QPushButton:hover { background-color: #92400E; }")
             self.launch_btn.setVisible(True)
+            self.action_btn.setEnabled(True)
         else:
             self.action_btn.setVisible(False)
             self.launch_btn.setVisible(True)
             self.action_btn.setEnabled(True)
 
     def run_action(self):
-        cask = self.app_info["cask"]
-        self.action_btn.setEnabled(False)
+        self.is_working = True
+        self.current_action = "install" if self.action_btn.text() == "Install" else "upgrade"
         
-        if self.action_btn.text() == "Install":
-            self.action_btn.setText("Installing...")
-            action = "install"
-        else:
-            self.action_btn.setText("Updating...")
-            action = "upgrade"
+        self.action_btn.setEnabled(False)
+        self.action_btn.setText("Installing..." if self.current_action == "install" else "Updating...")
             
-        self.thread = BrewActionThread(action, cask)
+        self.thread = BrewActionThread(self.current_action, self.app_info["cask"])
         self.thread.action_finished.connect(self.on_action_finished)
         self.thread.start()
 
     def on_action_finished(self, success):
+        self.is_working = False
         if success:
             self.set_status("installed")
         else:
-            self.action_btn.setText("Failed")
+            # BUG 1 FIX: If silent background install fails (usually due to a sudo password block), 
+            # gracefully fall back to terminal just for authentication.
+            self.action_btn.setText("Needs Auth")
+            self.action_btn.setStyleSheet("QPushButton { background-color: #DC2626; color: white; font-size: 12px; font-weight: 600; border-radius: 6px; padding: 6px 12px; border: none; } QPushButton:hover { background-color: #991B1B; }")
             self.action_btn.setEnabled(True)
+            
+            cask = self.app_info["cask"]
+            cmd = f"brew {self.current_action} --cask {cask} && exit"
+            subprocess.Popen(["osascript", "-e", f'tell application "Terminal" to do script "{cmd}"'])
 
 class HubWindow(QMainWindow):
     def __init__(self):
@@ -238,6 +251,9 @@ class HubWindow(QMainWindow):
         self.launcher_thread.update_available.connect(self.show_launcher_update)
         self.launcher_thread.start()
 
+        # BUG 3 FIX: Auto-scan the system immediately on boot
+        self.start_check()
+
     def show_launcher_update(self, new_version):
         self.launcher_update_btn.setText(f"Update Hub to v{new_version}")
         self.launcher_update_btn.setVisible(True)
@@ -246,7 +262,6 @@ class HubWindow(QMainWindow):
         self.launcher_update_btn.setText("Updating... Please wait")
         self.launcher_update_btn.setEnabled(False)
         
-        # Write a temporary bash script to handle the build silently after app closes
         script_content = """#!/bin/bash
 sleep 2
 cd ~/EngineeringHub
@@ -261,7 +276,6 @@ open -a EngineeringHub
             f.write(script_content)
         os.chmod(script_path, 0o755)
         
-        # Launch the script detached from this application
         subprocess.Popen([script_path], start_new_session=True)
         sys.exit()
 
@@ -304,10 +318,13 @@ open -a EngineeringHub
             cask = card.app_info["cask"]
             status = statuses.get(cask, "unknown")
             card.set_status(status)
-            if status == "outdated":
-                updates += 1
-            elif status == "missing":
-                missing += 1
+            
+            # Don't count apps currently installing toward the 'missing' or 'outdated' tally
+            if not card.is_working:
+                if status == "outdated":
+                    updates += 1
+                elif status == "missing":
+                    missing += 1
 
         if updates > 0:
             self.status_label.setText(f"Found {updates} pending update(s).")
