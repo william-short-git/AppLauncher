@@ -136,17 +136,23 @@ class AppCard(QFrame):
         )
         main_layout.addWidget(self.progress_bar)
 
+        # Instantly set initial button state from local disk check so UI loads without waiting
+        if self.app.is_installed():
+            self.set_status("installed")
+        else:
+            self.set_status("missing")
+
     def launch_app(self):
         self.app.launch()
-        # Verify running state after launching
-        QTimer.singleShot(2000, lambda: self.update_running_state())
+        # Verify running state shortly after launch
+        QTimer.singleShot(1500, self.update_running_state)
 
     def close_app(self):
         self.is_closing = True
         self.close_btn.setEnabled(False)
         self.close_btn.setText("Closing...")
         self.app.close()
-        QTimer.singleShot(1500, self._check_after_close)
+        QTimer.singleShot(1200, self._check_after_close)
 
     def _check_after_close(self):
         self.is_closing = False
@@ -420,11 +426,9 @@ class HubWindow(QMainWindow):
 
         self.apply_theme()
 
-        # Check for launcher updates
-        self.start_launcher_check()
-
-        # Initial check for application statuses
-        self.start_check(is_periodic=False)
+        # Smooth startup: allow the window to render instantly before launching background threads
+        QTimer.singleShot(80, lambda: self.start_check(is_periodic=False))
+        QTimer.singleShot(250, lambda: self.start_launcher_check(is_manual=False))
 
         # 2-Minute Background Update Check Timer
         # Checks for updates every 2 minutes if connected to the internet
@@ -433,8 +437,8 @@ class HubWindow(QMainWindow):
         self.auto_check_timer.timeout.connect(self.on_periodic_timer)
         self.auto_check_timer.start()
 
-        # Background worker to poll running GUI applications
-        self.poll_worker = ProcessPollWorker(interval_seconds=2.5, parent=self)
+        # Background worker to poll running GUI applications (lightweight, 5s interval)
+        self.poll_worker = ProcessPollWorker(interval_seconds=5.0, parent=self)
         self.poll_worker.running_apps_signal.connect(self.on_running_apps_updated)
         self.poll_worker.start()
 
@@ -450,17 +454,17 @@ class HubWindow(QMainWindow):
         super().closeEvent(event)
 
     def on_periodic_timer(self):
-        """Triggered every 2 minutes; performs update scan if connected to the internet."""
-        if network.is_connected(timeout=2.0):
-            self.start_launcher_check()
+        """Triggered every 2 minutes; performs fast cached scan if connected to the internet."""
+        if network.is_connected(timeout=0.8):
+            self.start_launcher_check(is_manual=False, is_periodic=True)
             self.start_check(is_periodic=True)
         else:
             self.status_label.setText("Offline — periodic update check paused until reconnected.")
 
-    def start_launcher_check(self, is_manual: bool = False):
+    def start_launcher_check(self, is_manual: bool = False, is_periodic: bool = False):
         if self.launcher_thread and self.launcher_thread.isRunning():
             return
-        self.launcher_thread = LauncherCheckWorker()
+        self.launcher_thread = LauncherCheckWorker(is_periodic=is_periodic)
         self.launcher_thread.update_available.connect(self.show_launcher_update)
         self.launcher_thread.check_completed.connect(self.on_launcher_check_completed)
         self.launcher_thread.start()
@@ -509,7 +513,7 @@ class HubWindow(QMainWindow):
 
     def start_check(self, is_periodic: bool = False):
         if not is_periodic:
-            self.start_launcher_check(is_manual=True)
+            self.start_launcher_check(is_manual=True, is_periodic=False)
 
         if self.check_thread and self.check_thread.isRunning():
             return
@@ -519,7 +523,7 @@ class HubWindow(QMainWindow):
             self.check_btn.setText("Scanning...")
             self.status_label.setText("Checking GitHub for launcher & app updates...")
 
-        self.check_thread = StatusCheckWorker(self.apps)
+        self.check_thread = StatusCheckWorker(self.apps, is_periodic=is_periodic)
         self.check_thread.finished_check.connect(lambda statuses: self.on_check_finished(statuses, is_periodic))
         self.check_thread.start()
 

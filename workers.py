@@ -23,7 +23,7 @@ import auth
 import network
 
 VERSION_URL = "https://raw.githubusercontent.com/william-short-git/AppLauncher/main/version.txt"
-APP_VERSION = "1.34"
+APP_VERSION = "1.35"
 
 
 class AppActionWorker(QThread):
@@ -263,56 +263,67 @@ class AppActionWorker(QThread):
             self.finished_action.emit(False, "Could not completely delete app files")
 
 
+_brew_cache: Dict[str, Any] = {"timestamp": 0.0, "outdated": {}}
+_launcher_cache: Dict[str, Any] = {"timestamp": 0.0, "has_update": False, "target": "", "reason": ""}
+
+
 class StatusCheckWorker(QThread):
     """
-    Scans Homebrew casks and filesystem to verify which applications are installed
-    and which have updates available.
+    Lightweight, non-blocking scanner for Homebrew casks and app status.
+    Eliminates system-wide scans and sets HOMEBREW_NO_AUTO_UPDATE=1 to prevent CPU spikes.
     """
     finished_check = pyqtSignal(dict)  # {app_name: status_str}
 
-    def __init__(self, apps: List[App]):
+    def __init__(self, apps: List[App], is_periodic: bool = False):
         super().__init__()
         self.apps = apps
+        self.is_periodic = is_periodic
 
     def run(self):
-        brew_bin = shutil.which("brew") or "/opt/homebrew/bin/brew" or "/usr/local/bin/brew"
-        online = network.is_connected(timeout=1.5)
-
-        installed_casks = set()
+        online = network.is_connected(timeout=0.8)
         outdated_casks = {}
 
-        if online and os.path.exists(brew_bin):
-            try:
-                list_proc = subprocess.run(
-                    [brew_bin, "list", "--cask", "-1"],
-                    capture_output=True,
-                    text=True,
-                    timeout=5
-                )
-                if list_proc.returncode == 0:
-                    installed_casks = set(list_proc.stdout.splitlines())
-            except Exception:
-                pass
+        # Only check casks for applications that are currently installed
+        installed_brew_casks = [
+            a.cask for a in self.apps
+            if a.source == "brew" and a.cask and a.is_installed()
+        ]
 
-            try:
-                outdated_proc = subprocess.run(
-                    [brew_bin, "outdated", "--cask", "--json=v2"],
-                    capture_output=True,
-                    text=True,
-                    timeout=8
-                )
-                if outdated_proc.returncode == 0:
-                    outdated_data = json.loads(outdated_proc.stdout)
-                    outdated_casks = {
-                        item["name"]: item.get("current_version")
-                        for item in outdated_data.get("casks", [])
-                    }
-            except Exception:
-                pass
+        if online and installed_brew_casks:
+            now = time.time()
+            # If periodic check and cache is fresh (< 5 minutes), use cached results
+            if self.is_periodic and (now - _brew_cache["timestamp"] < 300.0):
+                outdated_casks = _brew_cache["outdated"]
+            else:
+                brew_bin = shutil.which("brew") or "/opt/homebrew/bin/brew"
+                if os.path.exists(brew_bin):
+                    env = os.environ.copy()
+                    # Prevent Homebrew from running background auto-updates and analytics
+                    env["HOMEBREW_NO_AUTO_UPDATE"] = "1"
+                    env["HOMEBREW_NO_INSTALL_CLEANUP"] = "1"
+                    env["HOMEBREW_NO_ANALYTICS"] = "1"
+                    try:
+                        outdated_proc = subprocess.run(
+                            [brew_bin, "outdated", "--cask", "--json=v2"] + installed_brew_casks,
+                            capture_output=True,
+                            text=True,
+                            timeout=6,
+                            env=env
+                        )
+                        if outdated_proc.returncode == 0:
+                            outdated_data = json.loads(outdated_proc.stdout)
+                            outdated_casks = {
+                                item["name"]: item.get("current_version")
+                                for item in outdated_data.get("casks", [])
+                            }
+                            _brew_cache["timestamp"] = now
+                            _brew_cache["outdated"] = outdated_casks
+                    except Exception:
+                        outdated_casks = _brew_cache.get("outdated", {})
 
         statuses = {}
         for app in self.apps:
-            statuses[app.name] = app.check_status(installed_casks, outdated_casks, is_online=online)
+            statuses[app.name] = app.check_status(set(), outdated_casks, is_online=online)
 
         self.finished_check.emit(statuses)
 
@@ -322,12 +333,27 @@ class LauncherCheckWorker(QThread):
     update_available = pyqtSignal(str, str)  # (version, reason)
     check_completed = pyqtSignal(bool, str)  # (has_update, message)
 
+    def __init__(self, is_periodic: bool = False, parent=None):
+        super().__init__(parent)
+        self.is_periodic = is_periodic
+
     def run(self):
-        if not network.is_connected(timeout=2.0):
+        if not network.is_connected(timeout=0.8):
             self.check_completed.emit(False, "Offline: Cannot reach GitHub")
             return
 
-        has_update, target_version, reason = network.check_launcher_github_update(APP_VERSION)
+        now = time.time()
+        if self.is_periodic and (now - _launcher_cache["timestamp"] < 60.0):
+            has_update = _launcher_cache["has_update"]
+            target_version = _launcher_cache["target"]
+            reason = _launcher_cache["reason"]
+        else:
+            has_update, target_version, reason = network.check_launcher_github_update(APP_VERSION)
+            _launcher_cache["timestamp"] = now
+            _launcher_cache["has_update"] = has_update
+            _launcher_cache["target"] = target_version
+            _launcher_cache["reason"] = reason
+
         if has_update:
             self.update_available.emit(target_version, reason)
             self.check_completed.emit(True, reason)
@@ -372,7 +398,7 @@ class ProcessPollWorker(QThread):
     """
     running_apps_signal = pyqtSignal(set)
 
-    def __init__(self, interval_seconds: float = 2.5, parent=None):
+    def __init__(self, interval_seconds: float = 5.0, parent=None):
         super().__init__(parent)
         self.interval = interval_seconds
         self._running = True
