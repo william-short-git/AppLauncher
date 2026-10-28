@@ -46,12 +46,14 @@ class AppCard(QFrame):
 
         icon_frame = QFrame()
         icon_frame.setFixedSize(40, 40)
-        icon_frame.setStyleSheet("background-color: #27272A; border-radius: 8px;")
+        icon_frame.setStyleSheet("background-color: transparent; border-radius: 8px;")
         icon_layout = QVBoxLayout(icon_frame)
         icon_layout.setContentsMargins(0, 0, 0, 0)
+        icon_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
         icon_label = QLabel()
         icon_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        icon_label.setFixedSize(40, 40)
 
         candidate_icon_paths = [
             os.path.expanduser(f"~/EngineeringHub/{self.app.icon_path}"),
@@ -62,12 +64,12 @@ class AppCard(QFrame):
 
         if resolved_icon_path:
             pixmap = QPixmap(resolved_icon_path).scaled(
-                32, 32, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation
+                40, 40, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation
             )
             icon_label.setPixmap(pixmap)
         else:
             icon_label.setText(self.app.icon)
-            icon_label.setStyleSheet("font-size: 20px; background: transparent;")
+            icon_label.setStyleSheet("font-size: 24px; background: transparent;")
 
         icon_layout.addWidget(icon_label)
         top_layout.addWidget(icon_frame)

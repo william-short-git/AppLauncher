@@ -26,7 +26,7 @@ APPS: List[Dict[str, Any]] = [
         "app_name": "KiCad",
         "cask": "kicad",
         "source": "github",
-        "repo": "KiCad/kicad-mac-builder",
+        "repo": "KiCad/kicad-source-mirror",
         "desc": "Schematic capture (Updates pulled from GitHub releases)",
     },
     {

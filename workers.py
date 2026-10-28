@@ -106,16 +106,25 @@ class AppActionWorker(QThread):
 
         release = network.get_latest_github_release(self.app.repo)
         if not release:
+            # Fallback for KiCad if repository was misconfigured
+            if "kicad" in self.app.name.lower():
+                release = network.get_latest_github_release("KiCad/kicad-source-mirror")
+
+        if not release:
+            # If GitHub releases API is unreachable or rate-limited, fallback to Homebrew cask
+            if self.app.cask:
+                self._install_brew()
+                return
             self.finished_action.emit(False, "Could not fetch GitHub release")
             return
 
         dmg_url = None
         arch = "arm64" if platform.machine() == "arm64" else "x86_64"
 
-        # Match architecture or mac/darwin
+        # Match architecture or mac/darwin/universal
         for asset in release.get("assets", []):
             name = asset.get("name", "").lower()
-            if name.endswith(".dmg") and (arch in name or "mac" in name or "darwin" in name):
+            if name.endswith(".dmg") and (arch in name or "mac" in name or "darwin" in name or "universal" in name):
                 dmg_url = asset.get("browser_download_url")
                 break
 
@@ -126,6 +135,9 @@ class AppActionWorker(QThread):
                     break
 
         if not dmg_url:
+            if self.app.cask:
+                self._install_brew()
+                return
             self.finished_action.emit(False, "No macOS DMG found in release assets")
             return
 
@@ -159,35 +171,64 @@ class AppActionWorker(QThread):
             )
 
             found_app_path = None
-            for root, dirs, _ in os.walk(mount_point):
-                for d in dirs:
-                    if d.endswith(".app"):
-                        found_app_path = os.path.join(root, d)
-                        break
-                if found_app_path:
+            found_suite_dir = None
+            for item in os.listdir(mount_point):
+                item_full = os.path.join(mount_point, item)
+                if item.endswith(".app"):
+                    found_app_path = item_full
                     break
+                elif os.path.isdir(item_full) and not item.startswith("."):
+                    if item.lower() == self.app.app_name.lower():
+                        found_suite_dir = item_full
 
             if not found_app_path:
+                for root, dirs, _ in os.walk(mount_point):
+                    for d in dirs:
+                        if d.endswith(".app"):
+                            found_app_path = os.path.join(root, d)
+                            break
+                    if found_app_path:
+                        break
+
+            if not found_app_path and not found_suite_dir:
                 self.finished_action.emit(False, "No .app bundle found inside DMG")
                 return
 
-            dest_app_path = f"/Applications/{os.path.basename(found_app_path)}"
-            if os.path.exists(dest_app_path):
+            if found_suite_dir:
+                dest_dir = f"/Applications/{os.path.basename(found_suite_dir)}"
+                if os.path.exists(dest_dir):
+                    try:
+                        shutil.rmtree(dest_dir)
+                    except Exception:
+                        auth.run_sudo(["rm", "-rf", dest_dir])
                 try:
-                    shutil.rmtree(dest_app_path)
+                    subprocess.run(["cp", "-R", found_suite_dir, "/Applications/"], check=True)
                 except Exception:
-                    auth.run_sudo(["rm", "-rf", dest_app_path])
+                    auth.run_sudo(["cp", "-R", found_suite_dir, "/Applications/"])
 
-            try:
-                subprocess.run(["cp", "-R", found_app_path, "/Applications/"], check=True)
-            except Exception:
-                auth.run_sudo(["cp", "-R", found_app_path, "/Applications/"])
+            if found_app_path:
+                dest_app_path = f"/Applications/{os.path.basename(found_app_path)}"
+                if not os.path.exists(dest_app_path):
+                    try:
+                        subprocess.run(["cp", "-R", found_app_path, "/Applications/"], check=True)
+                    except Exception:
+                        auth.run_sudo(["cp", "-R", found_app_path, "/Applications/"])
 
             self.progress.emit(100)
             if self.app.is_installed():
                 self.finished_action.emit(True, "Installed successfully")
             else:
                 self.finished_action.emit(False, "Failed to copy application bundle")
+
+        except Exception as e:
+            # Fallback to Homebrew cask on error
+            if self.app.cask:
+                try:
+                    self._install_brew()
+                    return
+                except Exception:
+                    pass
+            self.finished_action.emit(False, str(e))
 
         finally:
             subprocess.run(["hdiutil", "detach", mount_point, "-quiet", "-force"], capture_output=True)

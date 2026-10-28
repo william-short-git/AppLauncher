@@ -50,12 +50,22 @@ class App:
             candidates.extend([
                 "/Applications/Autodesk Fusion.app",
                 os.path.expanduser("~/Applications/Autodesk Fusion.app"),
-                "/Applications/Autodesk/Autodesk Fusion.app"
+                "/Applications/Autodesk/Autodesk Fusion.app",
             ])
+            # Check Autodesk webdeploy streaming installation path
+            import glob
+            webdeploy_matches = glob.glob(
+                os.path.expanduser("~/Library/Application Support/Autodesk/webdeploy/production/*/Autodesk Fusion.app")
+            )
+            candidates.extend(webdeploy_matches)
         elif self.app_name == "KiCad":
             candidates.extend([
+                "/Applications/KiCad/KiCad.app",
                 "/Applications/KiCad/kicad.app",
                 "/Applications/KiCad.app",
+                "/Applications/kicad.app",
+                os.path.expanduser("~/Applications/KiCad/KiCad.app"),
+                os.path.expanduser("~/Applications/KiCad.app"),
             ])
 
         for path in candidates:
