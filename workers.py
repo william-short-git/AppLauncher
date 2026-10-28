@@ -312,7 +312,7 @@ class LauncherBuilderWorker(QThread):
             env = os.environ.copy()
             env["PYINSTALLER_CONFIG_DIR"] = "/tmp/pyinstaller"
             subprocess.run(
-                [pyinstaller_bin, "--windowed", "--name", "EngineeringHub", "--noconfirm", "hub.py"],
+                [pyinstaller_bin, "--windowed", "--name", "EngineeringHub", "--add-data", "icons:icons", "--noconfirm", "hub.py"],
                 cwd=repo_dir,
                 env=env,
                 check=True,

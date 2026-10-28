@@ -53,9 +53,15 @@ class AppCard(QFrame):
         icon_label = QLabel()
         icon_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
-        icon_path = os.path.expanduser(f"~/EngineeringHub/{self.app.icon_path}")
-        if os.path.exists(icon_path):
-            pixmap = QPixmap(icon_path).scaled(
+        candidate_icon_paths = [
+            os.path.expanduser(f"~/EngineeringHub/{self.app.icon_path}"),
+            os.path.join(getattr(sys, '_MEIPASS', os.path.dirname(os.path.abspath(__file__))), self.app.icon_path),
+            os.path.join(os.path.dirname(os.path.abspath(__file__)), self.app.icon_path),
+        ]
+        resolved_icon_path = next((p for p in candidate_icon_paths if os.path.exists(p)), None)
+
+        if resolved_icon_path:
+            pixmap = QPixmap(resolved_icon_path).scaled(
                 32, 32, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation
             )
             icon_label.setPixmap(pixmap)
