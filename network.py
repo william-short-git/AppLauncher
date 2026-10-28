@@ -161,7 +161,7 @@ def get_local_git_commit() -> Optional[str]:
     return None
 
 
-def check_launcher_github_update(current_version: str = "1.32") -> Tuple[bool, Optional[str], str]:
+def check_launcher_github_update(current_version: str = "1.33") -> Tuple[bool, Optional[str], str]:
     """
     Checks the GitHub repository for updates to EngineeringHub.
     Evaluates both version.txt and commit history against the GitHub repo.

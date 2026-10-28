@@ -135,7 +135,7 @@ class App:
                         return "outdated"
             return "installed"
 
-        elif self.source == "student":
+        elif self.source in ("student", "web"):
             return "installed"
 
         return "installed"

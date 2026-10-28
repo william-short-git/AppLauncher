@@ -18,6 +18,17 @@ APPS: List[Dict[str, Any]] = [
         "desc": "Code editing, debugging, and extension ecosystem",
     },
     {
+        "id": "antigravity",
+        "name": "Antigravity",
+        "icon": "🪐",
+        "icon_path": "icons/antigravity.png",
+        "category": "AI / Development",
+        "app_name": "Antigravity",
+        "source": "web",
+        "desc": "Advanced agentic coding assistant & development platform",
+        "url": "https://antigravity.google/",
+    },
+    {
         "id": "kicad",
         "name": "KiCad",
         "icon": "🔌",

@@ -144,7 +144,13 @@ class AppCard(QFrame):
 
         if status == "missing":
             self.action_btn.setVisible(True)
-            self.action_btn.setText("Student Portal" if self.app.is_student else "Install")
+            if self.app.is_student:
+                btn_text = "Student Portal"
+            elif self.app.source == "web":
+                btn_text = "Download"
+            else:
+                btn_text = "Install"
+            self.action_btn.setText(btn_text)
             self.action_btn.setStyleSheet(
                 "QPushButton { background-color: #059669; color: white; } "
                 "QPushButton:hover { background-color: #047857; }"
@@ -190,7 +196,7 @@ class AppCard(QFrame):
             self.progress_bar.setValue(val)
 
     def run_action(self):
-        if self.app.is_student:
+        if self.app.source in ("student", "web"):
             self.worker = AppActionWorker(self.app, "install")
             self.worker.start()
             return
@@ -200,7 +206,7 @@ class AppCard(QFrame):
         self.launch_btn.setVisible(False)
         self.delete_btn.setVisible(False)
 
-        is_install = self.action_btn.text() in ("Install", "Student Portal", "Retry Install", "Needs Auth", "Needs Password")
+        is_install = self.action_btn.text() in ("Install", "Student Portal", "Download", "Retry Install", "Needs Auth", "Needs Password")
         action = "install" if is_install else "upgrade"
         self.action_btn.setText(f"{action.title()}ing...")
         self.action_btn.setEnabled(False)

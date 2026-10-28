@@ -23,7 +23,7 @@ import auth
 import network
 
 VERSION_URL = "https://raw.githubusercontent.com/william-short-git/AppLauncher/main/version.txt"
-APP_VERSION = "1.32"
+APP_VERSION = "1.33"
 
 
 class AppActionWorker(QThread):
@@ -51,10 +51,10 @@ class AppActionWorker(QThread):
             self.finished_action.emit(False, str(e))
 
     def _handle_install_or_upgrade(self):
-        if self.app.source == "student":
-            url = self.app.url or "https://www.autodesk.com/education/edu-software/overview"
+        if self.app.source in ("student", "web"):
+            url = self.app.url or "https://antigravity.google/"
             webbrowser.open(url)
-            self.finished_action.emit(True, "Opened student portal")
+            self.finished_action.emit(True, "Opened portal in browser")
             return
 
         if self.app.source == "brew":
