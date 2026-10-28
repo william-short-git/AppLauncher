@@ -1,5 +1,7 @@
 import sys
+import os
 import json
+import time
 import shutil
 import subprocess
 import urllib.request
@@ -20,17 +22,33 @@ APPS = [
     {"name": "FreeCAD", "category": "Open-Source CAD", "app_name": "FreeCAD", "cask": "freecad", "desc": "Parametric 3D modeler for mechanical engineering"},
 ]
 
+class BrewActionThread(QThread):
+    action_finished = pyqtSignal(bool)
+
+    def __init__(self, action, cask):
+        super().__init__()
+        self.action = action # "install" or "upgrade"
+        self.cask = cask
+
+    def run(self):
+        brew_bin = shutil.which("brew") or "/opt/homebrew/bin/brew" or "/usr/local/bin/brew"
+        try:
+            subprocess.run([brew_bin, self.action, "--cask", self.cask], check=True, capture_output=True)
+            self.action_finished.emit(True)
+        except subprocess.CalledProcessError:
+            self.action_finished.emit(False)
+
 class LauncherCheckThread(QThread):
     update_available = pyqtSignal(str)
 
     def run(self):
         try:
-            req = urllib.request.Request(VERSION_URL, headers={'Cache-Control': 'no-cache'})
+            req = urllib.request.Request(f"{VERSION_URL}?t={time.time()}", headers={'Cache-Control': 'no-cache', 'User-Agent': 'Mozilla/5.0'})
             remote_version = urllib.request.urlopen(req, timeout=3).read().decode('utf-8').strip()
             if float(remote_version) > float(APP_VERSION):
                 self.update_available.emit(remote_version)
-        except Exception as e:
-            pass # Fail silently if offline
+        except Exception:
+            pass 
 
 class BrewCheckThread(QThread):
     finished_check = pyqtSignal(dict)
@@ -122,6 +140,7 @@ class AppCard(QFrame):
         else:
             self.action_btn.setVisible(False)
             self.launch_btn.setVisible(True)
+            self.action_btn.setEnabled(True)
 
     def run_action(self):
         cask = self.app_info["cask"]
@@ -129,12 +148,21 @@ class AppCard(QFrame):
         
         if self.action_btn.text() == "Install":
             self.action_btn.setText("Installing...")
-            cmd = f"brew install --cask {cask}"
+            action = "install"
         else:
             self.action_btn.setText("Updating...")
-            cmd = f"brew upgrade --cask {cask}"
+            action = "upgrade"
             
-        subprocess.Popen(["osascript", "-e", f'tell application "Terminal" to do script "{cmd}"'])
+        self.thread = BrewActionThread(action, cask)
+        self.thread.action_finished.connect(self.on_action_finished)
+        self.thread.start()
+
+    def on_action_finished(self, success):
+        if success:
+            self.set_status("installed")
+        else:
+            self.action_btn.setText("Failed")
+            self.action_btn.setEnabled(True)
 
 class HubWindow(QMainWindow):
     def __init__(self):
@@ -162,7 +190,6 @@ class HubWindow(QMainWindow):
         header.addLayout(header_text)
         header.addStretch()
 
-        # Secret Launcher Update Button
         self.launcher_update_btn = QPushButton("Update Launcher!")
         self.launcher_update_btn.setObjectName("LauncherUpdateBtn")
         self.launcher_update_btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -207,7 +234,6 @@ class HubWindow(QMainWindow):
         main_layout.addLayout(bottom_bar)
         self.apply_theme()
 
-        # Automatically check if a launcher update exists on startup
         self.launcher_thread = LauncherCheckThread()
         self.launcher_thread.update_available.connect(self.show_launcher_update)
         self.launcher_thread.start()
@@ -217,21 +243,27 @@ class HubWindow(QMainWindow):
         self.launcher_update_btn.setVisible(True)
 
     def trigger_self_update(self):
-        # 1. Pull latest code from GitHub
-        # 2. Rebuild the app with PyInstaller
-        # 3. Replace the old app in /Applications
-        # 4. Relaunch it!
-        update_script = (
-            "cd ~/EngineeringHub && "
-            "git pull origin main && "
-            "./venv/bin/pyinstaller --windowed --name EngineeringHub --noconfirm hub.py && "
-            "rm -rf /Applications/EngineeringHub.app && "
-            "cp -r dist/EngineeringHub.app /Applications/ && "
-            "open -a EngineeringHub && "
-            "exit"
-        )
-        subprocess.Popen(["osascript", "-e", f'tell application "Terminal" to do script "{update_script}"'])
-        sys.exit() # Close the current app immediately so it can be overwritten safely
+        self.launcher_update_btn.setText("Updating... Please wait")
+        self.launcher_update_btn.setEnabled(False)
+        
+        # Write a temporary bash script to handle the build silently after app closes
+        script_content = """#!/bin/bash
+sleep 2
+cd ~/EngineeringHub
+git pull origin main
+./venv/bin/pyinstaller --windowed --name EngineeringHub --noconfirm hub.py
+rm -rf /Applications/EngineeringHub.app
+cp -r dist/EngineeringHub.app /Applications/
+open -a EngineeringHub
+"""
+        script_path = "/tmp/update_hub.sh"
+        with open(script_path, "w") as f:
+            f.write(script_content)
+        os.chmod(script_path, 0o755)
+        
+        # Launch the script detached from this application
+        subprocess.Popen([script_path], start_new_session=True)
+        sys.exit()
 
     def apply_theme(self):
         self.setStyleSheet("""
