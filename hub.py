@@ -21,7 +21,7 @@ import auth
 import network
 from workers import (
     AppActionWorker, StatusCheckWorker, LauncherCheckWorker, LauncherBuilderWorker,
-    APP_VERSION
+    ProcessPollWorker, APP_VERSION
 )
 
 
@@ -32,6 +32,8 @@ class AppCard(QFrame):
         super().__init__()
         self.app = app
         self.is_working = False
+        self.is_closing = False
+        self.last_running = False
         self.worker: AppActionWorker = None
 
         self.setObjectName("AppCard")
@@ -108,6 +110,13 @@ class AppCard(QFrame):
         self.launch_btn.clicked.connect(self.launch_app)
         top_layout.addWidget(self.launch_btn)
 
+        self.close_btn = QPushButton("Close")
+        self.close_btn.setObjectName("CloseBtn")
+        self.close_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.close_btn.setVisible(False)
+        self.close_btn.clicked.connect(self.close_app)
+        top_layout.addWidget(self.close_btn)
+
         self.delete_btn = QPushButton("🗑")
         self.delete_btn.setObjectName("DeleteBtn")
         self.delete_btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -129,6 +138,32 @@ class AppCard(QFrame):
 
     def launch_app(self):
         self.app.launch()
+        # Verify running state after launching
+        QTimer.singleShot(2000, lambda: self.update_running_state())
+
+    def close_app(self):
+        self.is_closing = True
+        self.close_btn.setEnabled(False)
+        self.close_btn.setText("Closing...")
+        self.app.close()
+        QTimer.singleShot(1500, self._check_after_close)
+
+    def _check_after_close(self):
+        self.is_closing = False
+        self.close_btn.setEnabled(True)
+        self.close_btn.setText("Close")
+        self.update_running_state()
+
+    def update_running_state(self, running_apps_set: set = None):
+        if not self.app.is_installed() or self.is_working or self.is_closing:
+            self.last_running = False
+            self.close_btn.setVisible(False)
+            return
+        if running_apps_set is not None:
+            self.last_running = self.app.is_running(running_apps_set)
+        else:
+            self.last_running = self.app.is_running()
+        self.close_btn.setVisible(self.last_running)
 
     def set_status(self, status: str):
         """
@@ -156,6 +191,7 @@ class AppCard(QFrame):
                 "QPushButton:hover { background-color: #047857; }"
             )
             self.launch_btn.setVisible(False)
+            self.close_btn.setVisible(False)
             self.delete_btn.setVisible(False)
 
         elif status == "outdated":
@@ -168,6 +204,7 @@ class AppCard(QFrame):
                 )
                 self.launch_btn.setVisible(True)
                 self.delete_btn.setVisible(True)
+                self.close_btn.setVisible(self.last_running and not self.is_working)
             else:
                 self.set_status("missing")
 
@@ -176,6 +213,7 @@ class AppCard(QFrame):
                 self.action_btn.setVisible(False)
                 self.launch_btn.setVisible(True)
                 self.delete_btn.setVisible(True)
+                self.close_btn.setVisible(self.last_running and not self.is_working)
             else:
                 self.set_status("missing")
 
@@ -185,6 +223,7 @@ class AppCard(QFrame):
                 self.action_btn.setVisible(False)
                 self.launch_btn.setVisible(True)
                 self.delete_btn.setVisible(True)
+                self.close_btn.setVisible(self.last_running and not self.is_working)
             else:
                 self.set_status("missing")
 
@@ -202,8 +241,9 @@ class AppCard(QFrame):
             return
 
         self.is_working = True
-        # Immediately hide launch and delete buttons while operation is in progress
+        # Immediately hide launch, close, and delete buttons while operation is in progress
         self.launch_btn.setVisible(False)
+        self.close_btn.setVisible(False)
         self.delete_btn.setVisible(False)
 
         is_install = self.action_btn.text() in ("Install", "Student Portal", "Download", "Retry Install", "Needs Auth", "Needs Password")
@@ -227,8 +267,9 @@ class AppCard(QFrame):
 
     def run_delete(self):
         self.is_working = True
-        # Immediately hide launch and delete buttons
+        # Immediately hide launch, close, and delete buttons
         self.launch_btn.setVisible(False)
+        self.close_btn.setVisible(False)
         self.delete_btn.setVisible(False)
 
         self.action_btn.setVisible(True)
@@ -253,8 +294,9 @@ class AppCard(QFrame):
             else:
                 self.set_status("missing")
         else:
-            # Action failed: under NO circumstances should the Open button appear!
+            # Action failed: under NO circumstances should the Open or Close button appear!
             self.launch_btn.setVisible(False)
+            self.close_btn.setVisible(False)
             self.delete_btn.setVisible(False)
 
             if "password" in message.lower() or "auth" in message.lower():
@@ -391,6 +433,22 @@ class HubWindow(QMainWindow):
         self.auto_check_timer.timeout.connect(self.on_periodic_timer)
         self.auto_check_timer.start()
 
+        # Background worker to poll running GUI applications
+        self.poll_worker = ProcessPollWorker(interval_seconds=2.5, parent=self)
+        self.poll_worker.running_apps_signal.connect(self.on_running_apps_updated)
+        self.poll_worker.start()
+
+    def on_running_apps_updated(self, running_apps_set: set):
+        """Called whenever the background worker detects running GUI processes."""
+        for card in self.cards:
+            card.update_running_state(running_apps_set)
+
+    def closeEvent(self, event):
+        if hasattr(self, 'poll_worker') and self.poll_worker:
+            self.poll_worker.stop()
+            self.poll_worker.wait(500)
+        super().closeEvent(event)
+
     def on_periodic_timer(self):
         """Triggered every 2 minutes; performs update scan if connected to the internet."""
         if network.is_connected(timeout=2.0):
@@ -503,6 +561,8 @@ class HubWindow(QMainWindow):
             QPushButton { font-size: 12px; font-weight: 600; border-radius: 6px; padding: 6px 16px; border: none; }
             #LaunchBtn { background-color: #2563EB; color: #FFFFFF; }
             #LaunchBtn:hover { background-color: #1D4ED8; }
+            #CloseBtn { background-color: #DC2626; color: #FFFFFF; font-size: 12px; font-weight: 600; border-radius: 6px; padding: 6px 14px; border: none; }
+            #CloseBtn:hover { background-color: #B91C1C; }
             #DeleteBtn { background-color: #3F3F46; color: #FFFFFF; padding: 6px 10px; }
             #DeleteBtn:hover { background-color: #DC2626; }
             #StatusLabel { color: #52525B; font-size: 11px; }

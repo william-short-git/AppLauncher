@@ -23,7 +23,7 @@ import auth
 import network
 
 VERSION_URL = "https://raw.githubusercontent.com/william-short-git/AppLauncher/main/version.txt"
-APP_VERSION = "1.33"
+APP_VERSION = "1.34"
 
 
 class AppActionWorker(QThread):
@@ -363,3 +363,36 @@ class LauncherBuilderWorker(QThread):
             self.finished_build.emit(True)
         except Exception:
             self.finished_build.emit(False)
+
+
+class ProcessPollWorker(QThread):
+    """
+    Periodically polls running GUI applications in the background so the UI
+    remains completely responsive without frame drops.
+    """
+    running_apps_signal = pyqtSignal(set)
+
+    def __init__(self, interval_seconds: float = 2.5, parent=None):
+        super().__init__(parent)
+        self.interval = interval_seconds
+        self._running = True
+
+    def run(self):
+        while self._running:
+            from app_model import get_running_gui_apps
+            try:
+                running_apps = get_running_gui_apps()
+                if self._running:
+                    self.running_apps_signal.emit(running_apps)
+            except Exception:
+                pass
+
+            steps = max(1, int(self.interval / 0.1))
+            for _ in range(steps):
+                if not self._running:
+                    return
+                time.sleep(0.1)
+
+    def stop(self):
+        self._running = False
+

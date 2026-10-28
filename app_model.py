@@ -11,6 +11,24 @@ import network
 from network import compare_versions
 
 
+def get_running_gui_apps() -> set:
+    """Returns lowercased process names of all running GUI apps on macOS."""
+    for _ in range(2):
+        try:
+            res = subprocess.run(
+                ["osascript", "-e", 'tell application "System Events" to get name of every process whose background only is false'],
+                capture_output=True,
+                text=True,
+                timeout=2
+            )
+            if res.returncode == 0:
+                return {p.strip().lower() for p in res.stdout.split(",") if p.strip()}
+            time.sleep(0.2)
+        except Exception:
+            time.sleep(0.2)
+    return set()
+
+
 class App:
     """Represents a managed application and its operational lifecycle."""
 
@@ -97,6 +115,21 @@ class App:
         except Exception:
             return None
 
+    def get_bundle_id(self) -> Optional[str]:
+        """Returns CFBundleIdentifier from app Info.plist if available."""
+        path = self.find_app_path()
+        if not path:
+            return None
+        plist_path = os.path.join(path, "Contents", "Info.plist")
+        if os.path.exists(plist_path):
+            try:
+                with open(plist_path, "rb") as f:
+                    data = plistlib.load(f)
+                    return data.get("CFBundleIdentifier")
+            except Exception:
+                pass
+        return None
+
     def launch(self) -> bool:
         """Launches the application via macOS open command."""
         path = self.find_app_path()
@@ -108,6 +141,66 @@ class App:
             return True
         except Exception:
             return False
+
+    def is_running(self, running_apps_set: Optional[set] = None) -> bool:
+        """Checks if the application is currently running."""
+        if running_apps_set is None:
+            running_apps_set = get_running_gui_apps()
+
+        possible_names = {self.name.lower(), self.app_name.lower()}
+        if self.id == "vscode" or "visual studio code" in self.name.lower():
+            possible_names.update(["code", "visual studio code", "electron"])
+        elif self.id == "kicad":
+            possible_names.update(["kicad", "kicad.app"])
+        elif self.id == "fusion":
+            possible_names.update(["autodesk fusion", "autodesk fusion 360", "fusion360", "fusion"])
+        elif self.id == "freecad":
+            possible_names.update(["freecad"])
+        elif self.id == "ltspice":
+            possible_names.update(["ltspice", "crossover", "ltspicexvii"])
+        elif self.id == "antigravity":
+            possible_names.update(["antigravity"])
+
+        return bool(possible_names.intersection(running_apps_set))
+
+    def close(self) -> bool:
+        """Gracefully closes the running application."""
+        bundle_id = self.get_bundle_id()
+        if bundle_id:
+            try:
+                subprocess.run(
+                    ["osascript", "-e", f'tell application id "{bundle_id}" to quit'],
+                    capture_output=True,
+                    timeout=3
+                )
+            except Exception:
+                pass
+
+        app_identifiers = [self.name, self.app_name]
+        if self.id == "vscode":
+            app_identifiers.extend(["Visual Studio Code", "Code"])
+        elif self.id == "fusion":
+            app_identifiers.extend(["Autodesk Fusion", "Autodesk Fusion 360", "Fusion360"])
+        elif self.id == "kicad":
+            app_identifiers.extend(["KiCad", "kicad"])
+        elif self.id == "ltspice":
+            app_identifiers.extend(["LTspice", "LTspiceXVII"])
+        elif self.id == "freecad":
+            app_identifiers.extend(["FreeCAD", "freecad"])
+        elif self.id == "antigravity":
+            app_identifiers.append("Antigravity")
+
+        for ident in app_identifiers:
+            try:
+                subprocess.run(
+                    ["osascript", "-e", f'tell application "{ident}" to quit'],
+                    capture_output=True,
+                    timeout=2
+                )
+            except Exception:
+                pass
+
+        return True
 
     def check_status(self, installed_casks: set, outdated_casks: dict, is_online: bool = True) -> str:
         """
