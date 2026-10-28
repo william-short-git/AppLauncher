@@ -2,11 +2,15 @@ import sys
 import json
 import shutil
 import subprocess
+import urllib.request
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, 
     QHBoxLayout, QLabel, QPushButton, QFrame, QScrollArea
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
+
+APP_VERSION = "1.0"
+VERSION_URL = "https://raw.githubusercontent.com/william-short-git/AppLauncher/main/version.txt"
 
 APPS = [
     {"name": "Visual Studio Code", "category": "Development", "app_name": "Visual Studio Code", "cask": "visual-studio-code", "desc": "Code editing, debugging, and extension ecosystem"},
@@ -16,22 +20,31 @@ APPS = [
     {"name": "FreeCAD", "category": "Open-Source CAD", "app_name": "FreeCAD", "cask": "freecad", "desc": "Parametric 3D modeler for mechanical engineering"},
 ]
 
+class LauncherCheckThread(QThread):
+    update_available = pyqtSignal(str)
+
+    def run(self):
+        try:
+            req = urllib.request.Request(VERSION_URL, headers={'Cache-Control': 'no-cache'})
+            remote_version = urllib.request.urlopen(req, timeout=3).read().decode('utf-8').strip()
+            if float(remote_version) > float(APP_VERSION):
+                self.update_available.emit(remote_version)
+        except Exception as e:
+            pass # Fail silently if offline
+
 class BrewCheckThread(QThread):
     finished_check = pyqtSignal(dict)
 
     def run(self):
         brew_bin = shutil.which("brew") or "/opt/homebrew/bin/brew" or "/usr/local/bin/brew"
         try:
-            # 1. Get all installed casks
             installed_res = subprocess.run([brew_bin, "list", "--cask", "-1"], capture_output=True, text=True, check=True)
             installed = installed_res.stdout.splitlines()
 
-            # 2. Get outdated casks
             outdated_res = subprocess.run([brew_bin, "outdated", "--cask", "--json=v2"], capture_output=True, text=True, check=True)
             outdated_data = json.loads(outdated_res.stdout)
             outdated = {item["name"]: item["current_version"] for item in outdated_data.get("casks", [])}
 
-            # 3. Determine status for each app
             statuses = {}
             for app in APPS:
                 cask = app["cask"]
@@ -99,18 +112,12 @@ class AppCard(QFrame):
         if status == "missing":
             self.action_btn.setVisible(True)
             self.action_btn.setText("Install")
-            self.action_btn.setStyleSheet("""
-                QPushButton { background-color: #059669; color: white; font-size: 12px; font-weight: 600; border-radius: 6px; padding: 6px 12px; border: none; }
-                QPushButton:hover { background-color: #047857; }
-            """)
+            self.action_btn.setStyleSheet("QPushButton { background-color: #059669; color: white; font-size: 12px; font-weight: 600; border-radius: 6px; padding: 6px 12px; border: none; } QPushButton:hover { background-color: #047857; }")
             self.launch_btn.setVisible(False)
         elif status == "outdated":
             self.action_btn.setVisible(True)
             self.action_btn.setText("Update")
-            self.action_btn.setStyleSheet("""
-                QPushButton { background-color: #B45309; color: #FEF3C7; font-size: 12px; font-weight: 600; border-radius: 6px; padding: 6px 12px; border: none; }
-                QPushButton:hover { background-color: #92400E; }
-            """)
+            self.action_btn.setStyleSheet("QPushButton { background-color: #B45309; color: #FEF3C7; font-size: 12px; font-weight: 600; border-radius: 6px; padding: 6px 12px; border: none; } QPushButton:hover { background-color: #92400E; }")
             self.launch_btn.setVisible(True)
         else:
             self.action_btn.setVisible(False)
@@ -132,7 +139,7 @@ class AppCard(QFrame):
 class HubWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Engineering Hub")
+        self.setWindowTitle(f"Engineering Hub v{APP_VERSION}")
         self.setFixedSize(680, 560)
 
         central = QWidget()
@@ -154,6 +161,14 @@ class HubWindow(QMainWindow):
         header_text.addWidget(subtitle)
         header.addLayout(header_text)
         header.addStretch()
+
+        # Secret Launcher Update Button
+        self.launcher_update_btn = QPushButton("Update Launcher!")
+        self.launcher_update_btn.setObjectName("LauncherUpdateBtn")
+        self.launcher_update_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.launcher_update_btn.setVisible(False)
+        self.launcher_update_btn.clicked.connect(self.trigger_self_update)
+        header.addWidget(self.launcher_update_btn)
 
         self.check_btn = QPushButton("Check Updates")
         self.check_btn.setObjectName("PrimaryActionBtn")
@@ -192,6 +207,32 @@ class HubWindow(QMainWindow):
         main_layout.addLayout(bottom_bar)
         self.apply_theme()
 
+        # Automatically check if a launcher update exists on startup
+        self.launcher_thread = LauncherCheckThread()
+        self.launcher_thread.update_available.connect(self.show_launcher_update)
+        self.launcher_thread.start()
+
+    def show_launcher_update(self, new_version):
+        self.launcher_update_btn.setText(f"Update Hub to v{new_version}")
+        self.launcher_update_btn.setVisible(True)
+
+    def trigger_self_update(self):
+        # 1. Pull latest code from GitHub
+        # 2. Rebuild the app with PyInstaller
+        # 3. Replace the old app in /Applications
+        # 4. Relaunch it!
+        update_script = (
+            "cd ~/EngineeringHub && "
+            "git pull origin main && "
+            "./venv/bin/pyinstaller --windowed --name EngineeringHub --noconfirm hub.py && "
+            "rm -rf /Applications/EngineeringHub.app && "
+            "cp -r dist/EngineeringHub.app /Applications/ && "
+            "open -a EngineeringHub && "
+            "exit"
+        )
+        subprocess.Popen(["osascript", "-e", f'tell application "Terminal" to do script "{update_script}"'])
+        sys.exit() # Close the current app immediately so it can be overwritten safely
+
     def apply_theme(self):
         self.setStyleSheet("""
             QMainWindow { background-color: #121214; }
@@ -199,7 +240,8 @@ class HubWindow(QMainWindow):
             #HeaderSubtitle { color: #71717A; font-size: 13px; font-weight: 400; }
             #PrimaryActionBtn { background-color: #27272A; color: #FAFAFA; font-size: 13px; font-weight: 500; border: 1px solid #3F3F46; border-radius: 8px; padding: 8px 16px; }
             #PrimaryActionBtn:hover { background-color: #3F3F46; border-color: #52525B; }
-            #PrimaryActionBtn:pressed { background-color: #18181B; }
+            #LauncherUpdateBtn { background-color: #10B981; color: white; font-weight: bold; border-radius: 8px; padding: 8px 16px; border: none;}
+            #LauncherUpdateBtn:hover { background-color: #059669; }
             #AppCard { background-color: #18181B; border: 1px solid #27272A; border-radius: 12px; }
             #AppCard:hover { border-color: #3F3F46; background-color: #1C1C20; }
             #AppName { color: #F4F4F5; font-size: 15px; font-weight: 600; }
@@ -207,13 +249,10 @@ class HubWindow(QMainWindow):
             #AppDesc { color: #71717A; font-size: 12px; }
             #LaunchBtn { background-color: #2563EB; color: #FFFFFF; font-size: 12px; font-weight: 600; border-radius: 6px; padding: 6px 16px; border: none; }
             #LaunchBtn:hover { background-color: #1D4ED8; }
-            #LaunchBtn:pressed { background-color: #1E40AF; }
             #StatusLabel { color: #52525B; font-size: 11px; }
             #CardScrollArea { background: transparent; }
             QScrollBar:vertical { border: none; background: transparent; width: 6px; margin: 0px; }
             QScrollBar::handle:vertical { background: #27272A; border-radius: 3px; min-height: 20px; }
-            QScrollBar::handle:vertical:hover { background: #3F3F46; }
-            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0px; }
         """)
 
     def start_check(self):
@@ -228,8 +267,7 @@ class HubWindow(QMainWindow):
         self.check_btn.setEnabled(True)
         self.check_btn.setText("Check Updates")
         
-        updates = 0
-        missing = 0
+        updates, missing = 0, 0
         for card in self.cards:
             cask = card.app_info["cask"]
             status = statuses.get(cask, "unknown")
