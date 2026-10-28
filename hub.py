@@ -6,21 +6,23 @@ import shutil
 import platform
 import subprocess
 import urllib.request
+import webbrowser
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, 
     QHBoxLayout, QLabel, QPushButton, QFrame, QScrollArea, QProgressBar
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer
+from PyQt6.QtGui import QPixmap
 
-APP_VERSION = "1.3"
+APP_VERSION = "1.31"
 VERSION_URL = "https://raw.githubusercontent.com/william-short-git/AppLauncher/main/version.txt"
 
 APPS = [
-    {"name": "Visual Studio Code", "icon": "💻", "category": "Development", "app_name": "Visual Studio Code", "cask": "visual-studio-code", "source": "brew", "desc": "Code editing, debugging, and extension ecosystem"},
-    {"name": "KiCad", "icon": "🔌", "category": "EDA / PCB Design", "app_name": "KiCad", "cask": "kicad", "source": "brew", "desc": "Schematic capture (Official releases hosted via KiCad servers)"},
-    {"name": "LTspice", "icon": "⚡", "category": "Simulation", "app_name": "LTspice", "cask": "ltspice", "source": "brew", "desc": "High-performance SPICE simulation and circuit analysis"},
-    {"name": "Autodesk Fusion", "icon": "🏗️", "category": "CAD / CAM", "app_name": "Autodesk Fusion", "cask": "autodesk-fusion", "source": "brew", "desc": "Cloud-based 3D modeling, CAM, and engineering design"},
-    {"name": "FreeCAD", "icon": "🛠️", "category": "Open-Source CAD", "app_name": "FreeCAD", "cask": "freecad", "source": "github", "repo": "FreeCAD/FreeCAD", "desc": "Parametric 3D modeler (Updates pulled directly from GitHub)"},
+    {"name": "Visual Studio Code", "icon": "💻", "icon_path": "icons/vscode.png", "category": "Development", "app_name": "Visual Studio Code", "cask": "visual-studio-code", "source": "brew", "desc": "Code editing, debugging, and extension ecosystem"},
+    {"name": "KiCad", "icon": "🔌", "icon_path": "icons/kicad.png", "category": "EDA / PCB Design", "app_name": "KiCad", "cask": "kicad", "source": "github", "repo": "KiCad/kicad-mac-builder", "desc": "Schematic capture (Updates pulled from GitHub releases)"},
+    {"name": "LTspice", "icon": "⚡", "icon_path": "icons/ltspice.png", "category": "Simulation", "app_name": "LTspice", "cask": "ltspice", "source": "brew", "desc": "High-performance SPICE simulation and circuit analysis"},
+    {"name": "Autodesk Fusion", "icon": "🏗️", "icon_path": "icons/fusion.png", "category": "CAD / CAM", "app_name": "Autodesk Fusion 360", "cask": "autodesk-fusion", "source": "student", "desc": "Managed securely via Autodesk Education portal"},
+    {"name": "FreeCAD", "icon": "🛠️", "icon_path": "icons/freecad.png", "category": "Open-Source CAD", "app_name": "FreeCAD", "cask": "freecad", "source": "github", "repo": "FreeCAD/FreeCAD", "desc": "Parametric 3D modeler (Updates pulled from GitHub)"},
 ]
 
 class GithubDownloadThread(QThread):
@@ -63,14 +65,14 @@ class GithubDownloadThread(QThread):
                     self.progress.emit(min(p, 100))
             
             urllib.request.urlretrieve(dmg_url, temp_dmg, reporthook)
-            self.progress.emit(100) # Switch to indeterminate for extraction
+            self.progress.emit(100)
 
             mount_point = f"/Volumes/{self.app_name}_mount"
             subprocess.run(["hdiutil", "attach", temp_dmg, "-mountpoint", mount_point, "-nobrowse", "-quiet"], check=True)
 
             app_path = f"/Applications/{self.app_name}.app"
             if os.path.exists(app_path):
-                shutil.rmtree(app_path) # Delete old version
+                shutil.rmtree(app_path) 
             
             for item in os.listdir(mount_point):
                 if item.endswith(".app"):
@@ -145,12 +147,11 @@ class BrewCheckThread(QThread):
                         statuses[app["name"]] = "outdated"
                     else:
                         statuses[app["name"]] = "installed"
-                elif app["source"] == "github":
+                elif app["source"] in ["github", "student"]:
                     if not os.path.exists(f"/Applications/{app['app_name']}.app"):
                         statuses[app["name"]] = "missing"
                     else:
                         statuses[app["name"]] = "installed" 
-                        # To keep it fast, GitHub version checking is skipped on global scan unless requested
             self.finished_check.emit(statuses)
         except Exception:
             self.finished_check.emit({})
@@ -175,9 +176,18 @@ class AppCard(QFrame):
         icon_frame.setStyleSheet("background-color: #27272A; border-radius: 8px;")
         icon_layout = QVBoxLayout(icon_frame)
         icon_layout.setContentsMargins(0,0,0,0)
-        icon_label = QLabel(app_info["icon"])
+        
+        icon_label = QLabel()
         icon_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        icon_label.setStyleSheet("font-size: 20px; background: transparent;")
+        
+        icon_path = os.path.expanduser(f"~/EngineeringHub/{app_info.get('icon_path', '')}")
+        if os.path.exists(icon_path):
+            pixmap = QPixmap(icon_path).scaled(32, 32, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+            icon_label.setPixmap(pixmap)
+        else:
+            icon_label.setText(app_info["icon"])
+            icon_label.setStyleSheet("font-size: 20px; background: transparent;")
+            
         icon_layout.addWidget(icon_label)
         top_layout.addWidget(icon_frame)
 
@@ -212,6 +222,13 @@ class AppCard(QFrame):
         self.launch_btn.clicked.connect(self.launch_app)
         top_layout.addWidget(self.launch_btn)
 
+        self.delete_btn = QPushButton("🗑")
+        self.delete_btn.setObjectName("DeleteBtn")
+        self.delete_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.delete_btn.setVisible(False)
+        self.delete_btn.clicked.connect(self.run_delete)
+        top_layout.addWidget(self.delete_btn)
+
         main_layout.addLayout(top_layout)
 
         self.progress_bar = QProgressBar()
@@ -230,32 +247,41 @@ class AppCard(QFrame):
     def set_status(self, status):
         if self.is_working: return
         self.action_btn.setEnabled(True)
+        self.delete_btn.setEnabled(True)
         self.progress_bar.setVisible(False)
         
         if status == "missing":
             self.action_btn.setVisible(True)
-            self.action_btn.setText("Install")
+            self.action_btn.setText("Student Portal" if self.app_info["source"] == "student" else "Install")
             self.action_btn.setStyleSheet("QPushButton { background-color: #059669; color: white; } QPushButton:hover { background-color: #047857; }")
             self.launch_btn.setVisible(False)
+            self.delete_btn.setVisible(False)
         elif status == "outdated":
             self.action_btn.setVisible(True)
             self.action_btn.setText("Update")
             self.action_btn.setStyleSheet("QPushButton { background-color: #B45309; color: #FEF3C7; } QPushButton:hover { background-color: #92400E; }")
             self.launch_btn.setVisible(True)
+            self.delete_btn.setVisible(True)
         else:
             self.action_btn.setVisible(False)
             self.launch_btn.setVisible(True)
+            self.delete_btn.setVisible(True)
 
     def update_progress(self, val):
         if val == 100:
-            self.progress_bar.setRange(0, 0) # Indeterminate extraction phase
+            self.progress_bar.setRange(0, 0)
         else:
             self.progress_bar.setRange(0, 100)
             self.progress_bar.setValue(val)
 
     def run_action(self):
+        if self.app_info["source"] == "student":
+            webbrowser.open("https://www.autodesk.com/education/edu-software/overview")
+            return
+
         self.is_working = True
         self.action_btn.setEnabled(False)
+        self.delete_btn.setEnabled(False)
         action = "install" if self.action_btn.text() == "Install" else "upgrade"
         self.action_btn.setText(f"{action.title()}ing...")
         
@@ -267,11 +293,30 @@ class AppCard(QFrame):
             self.thread = GithubDownloadThread(self.app_info["repo"], self.app_info["app_name"])
             self.thread.progress.connect(self.update_progress)
         else:
-            self.progress_bar.setRange(0, 0) # Indeterminate for Brew
+            self.progress_bar.setRange(0, 0)
             self.thread = BrewActionThread(action, self.app_info["cask"])
             
         self.thread.finished_action.connect(self.on_action_finished)
         self.thread.start()
+
+    def run_delete(self):
+        self.is_working = True
+        self.action_btn.setVisible(True)
+        self.action_btn.setText("Uninstalling...")
+        self.action_btn.setStyleSheet("QPushButton { background-color: #3F3F46; color: white; }")
+        self.action_btn.setEnabled(False)
+        self.delete_btn.setEnabled(False)
+        self.launch_btn.setVisible(False)
+        
+        if self.app_info["source"] == "brew":
+            cmd = f"brew uninstall --cask {self.app_info['cask']} && exit"
+            subprocess.Popen(["osascript", "-e", f'tell application "Terminal" to do script "{cmd}"'])
+            QTimer.singleShot(5000, lambda: [setattr(self, 'is_working', False), self.set_status("missing")])
+        else:
+            app_path = f"/Applications/{self.app_info['app_name']}.app"
+            subprocess.run(["rm", "-rf", app_path])
+            self.is_working = False
+            self.set_status("missing")
 
     def on_action_finished(self, success):
         if success:
@@ -424,6 +469,8 @@ class HubWindow(QMainWindow):
             QPushButton { font-size: 12px; font-weight: 600; border-radius: 6px; padding: 6px 16px; border: none; }
             #LaunchBtn { background-color: #2563EB; color: #FFFFFF; }
             #LaunchBtn:hover { background-color: #1D4ED8; }
+            #DeleteBtn { background-color: #3F3F46; color: #FFFFFF; padding: 6px 10px; }
+            #DeleteBtn:hover { background-color: #DC2626; }
             #StatusLabel { color: #52525B; font-size: 11px; }
             #CardScrollArea { background: transparent; }
             QScrollBar:vertical { border: none; background: transparent; width: 6px; margin: 0px; }
