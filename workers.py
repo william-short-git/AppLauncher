@@ -276,20 +276,21 @@ class StatusCheckWorker(QThread):
 
 
 class LauncherCheckWorker(QThread):
-    """Periodically queries GitHub for newer versions of EngineeringHub."""
-    update_available = pyqtSignal(str)
+    """Queries GitHub repository for newer versions or commits of EngineeringHub."""
+    update_available = pyqtSignal(str, str)  # (version, reason)
+    check_completed = pyqtSignal(bool, str)  # (has_update, message)
 
     def run(self):
-        if not network.is_connected(timeout=1.5):
+        if not network.is_connected(timeout=2.0):
+            self.check_completed.emit(False, "Offline: Cannot reach GitHub")
             return
 
-        remote_version = network.get_remote_version(VERSION_URL)
-        if remote_version:
-            try:
-                if compare_versions(remote_version, APP_VERSION) > 0:
-                    self.update_available.emit(remote_version)
-            except Exception:
-                pass
+        has_update, target_version, reason = network.check_launcher_github_update(APP_VERSION)
+        if has_update:
+            self.update_available.emit(target_version, reason)
+            self.check_completed.emit(True, reason)
+        else:
+            self.check_completed.emit(False, f"EngineeringHub v{APP_VERSION} is up to date with GitHub")
 
 
 class LauncherBuilderWorker(QThread):

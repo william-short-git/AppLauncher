@@ -385,16 +385,25 @@ class HubWindow(QMainWindow):
         else:
             self.status_label.setText("Offline — periodic update check paused until reconnected.")
 
-    def start_launcher_check(self):
+    def start_launcher_check(self, is_manual: bool = False):
         if self.launcher_thread and self.launcher_thread.isRunning():
             return
         self.launcher_thread = LauncherCheckWorker()
         self.launcher_thread.update_available.connect(self.show_launcher_update)
+        self.launcher_thread.check_completed.connect(self.on_launcher_check_completed)
         self.launcher_thread.start()
 
-    def show_launcher_update(self, new_version: str):
-        self.launcher_update_btn.setText(f"Update Hub to v{new_version}")
+    def show_launcher_update(self, new_version: str, reason: str = ""):
+        btn_text = f"Update Hub to v{new_version}!" if new_version and new_version != "latest" else "Update Hub from GitHub!"
+        self.launcher_update_btn.setText(btn_text)
         self.launcher_update_btn.setVisible(True)
+        if reason:
+            self.status_label.setText(f"{reason}. Click 'Update Hub' to install.")
+
+    def on_launcher_check_completed(self, has_update: bool, message: str):
+        if not has_update and not self.launcher_update_btn.isVisible():
+            if "Scanning" not in self.check_btn.text():
+                self.status_label.setText(f"{message}. All tools up to date.")
 
     def trigger_self_update(self):
         self.launcher_update_btn.setText("Compiling Update...")
@@ -413,9 +422,11 @@ class HubWindow(QMainWindow):
             with open(script_path, "w") as f:
                 f.write(
                     "#!/bin/bash\n"
+                    "pkill -f 'EngineeringHub' 2>/dev/null\n"
+                    "sleep 1\n"
                     "rm -rf /Applications/EngineeringHub.app\n"
-                    "cp -r ~/EngineeringHub/dist/EngineeringHub.app /Applications/\n"
-                    "open -a EngineeringHub\n"
+                    "cp -R ~/EngineeringHub/dist/EngineeringHub.app /Applications/\n"
+                    "open /Applications/EngineeringHub.app\n"
                 )
             os.chmod(script_path, 0o755)
             subprocess.Popen([script_path], start_new_session=True)
@@ -425,13 +436,16 @@ class HubWindow(QMainWindow):
             self.launcher_progress.setVisible(False)
 
     def start_check(self, is_periodic: bool = False):
+        if not is_periodic:
+            self.start_launcher_check(is_manual=True)
+
         if self.check_thread and self.check_thread.isRunning():
             return
 
         if not is_periodic:
             self.check_btn.setEnabled(False)
             self.check_btn.setText("Scanning...")
-            self.status_label.setText("Querying Homebrew repository & installed applications...")
+            self.status_label.setText("Checking GitHub for launcher & app updates...")
 
         self.check_thread = StatusCheckWorker(self.apps)
         self.check_thread.finished_check.connect(lambda statuses: self.on_check_finished(statuses, is_periodic))
