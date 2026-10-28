@@ -17,7 +17,8 @@ from typing import List, Dict, Optional
 
 from PyQt6.QtCore import QThread, pyqtSignal
 
-from app_model import App, compare_versions
+from app_model import App
+from network import compare_versions
 import auth
 import network
 

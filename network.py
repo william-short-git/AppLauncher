@@ -10,10 +10,37 @@ import json
 import time
 import base64
 import os
+import re
 import subprocess
 from typing import Optional, Dict, Any, Tuple
 
-from app_model import compare_versions
+
+def compare_versions(v1: str, v2: str) -> int:
+    """
+    Compares two version strings (e.g. '1.1.4' vs 'v1.2.0').
+    Returns:
+       1 if v1 > v2
+      -1 if v1 < v2
+       0 if v1 == v2
+    """
+    try:
+        from packaging import version
+        p1 = version.parse(v1)
+        p2 = version.parse(v2)
+        if p1 > p2:
+            return 1
+        elif p1 < p2:
+            return -1
+        return 0
+    except Exception:
+        nums1 = [int(n) for n in re.findall(r'\d+', v1)]
+        nums2 = [int(n) for n in re.findall(r'\d+', v2)]
+        if nums1 > nums2:
+            return 1
+        elif nums1 < nums2:
+            return -1
+        return 0
+
 
 GITHUB_REPO = "william-short-git/AppLauncher"
 VERSION_URL = "https://raw.githubusercontent.com/william-short-git/AppLauncher/main/version.txt"

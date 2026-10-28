@@ -4,38 +4,11 @@ Provides unified detection, versioning, launch, and status determination.
 """
 
 import os
-import re
 import plistlib
 import subprocess
 from typing import Optional, List, Dict, Any
 import network
-
-
-def compare_versions(v1: str, v2: str) -> int:
-    """
-    Compares two version strings (e.g. '1.1.4' vs 'v1.2.0').
-    Returns:
-       1 if v1 > v2
-      -1 if v1 < v2
-       0 if v1 == v2
-    """
-    try:
-        from packaging import version
-        p1 = version.parse(v1)
-        p2 = version.parse(v2)
-        if p1 > p2:
-            return 1
-        elif p1 < p2:
-            return -1
-        return 0
-    except Exception:
-        nums1 = [int(n) for n in re.findall(r'\d+', v1)]
-        nums2 = [int(n) for n in re.findall(r'\d+', v2)]
-        if nums1 > nums2:
-            return 1
-        elif nums1 < nums2:
-            return -1
-        return 0
+from network import compare_versions
 
 
 class App:
