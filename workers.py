@@ -23,7 +23,7 @@ import auth
 import network
 
 VERSION_URL = "https://raw.githubusercontent.com/william-short-git/AppLauncher/main/version.txt"
-APP_VERSION = "1.35"
+APP_VERSION = "1.36"
 
 
 class AppActionWorker(QThread):

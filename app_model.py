@@ -85,6 +85,20 @@ class App:
                 os.path.expanduser("~/Applications/KiCad/KiCad.app"),
                 os.path.expanduser("~/Applications/KiCad.app"),
             ])
+        elif self.id == "bambu" or self.app_name in ("BambuStudio", "Bambu Studio"):
+            candidates.extend([
+                "/Applications/BambuStudio.app",
+                "/Applications/Bambu Studio.app",
+                os.path.expanduser("~/Applications/BambuStudio.app"),
+                os.path.expanduser("~/Applications/Bambu Studio.app"),
+            ])
+        elif self.id == "arduino" or self.app_name in ("Arduino IDE", "Arduino"):
+            candidates.extend([
+                "/Applications/Arduino IDE.app",
+                "/Applications/Arduino.app",
+                os.path.expanduser("~/Applications/Arduino IDE.app"),
+                os.path.expanduser("~/Applications/Arduino.app"),
+            ])
 
         for path in candidates:
             if os.path.exists(path) and os.path.isdir(path):
@@ -160,6 +174,10 @@ class App:
             possible_names.update(["ltspice", "crossover", "ltspicexvii"])
         elif self.id == "antigravity":
             possible_names.update(["antigravity"])
+        elif self.id == "arduino":
+            possible_names.update(["arduino ide", "arduino", "arduino-ide"])
+        elif self.id == "bambu":
+            possible_names.update(["bambustudio", "bambu studio"])
 
         return bool(possible_names.intersection(running_apps_set))
 
@@ -179,6 +197,10 @@ class App:
         app_identifiers = [self.name, self.app_name]
         if self.id == "vscode":
             app_identifiers.extend(["Visual Studio Code", "Code"])
+        elif self.id == "arduino":
+            app_identifiers.extend(["Arduino IDE", "Arduino"])
+        elif self.id == "bambu":
+            app_identifiers.extend(["BambuStudio", "Bambu Studio"])
         elif self.id == "fusion":
             app_identifiers.extend(["Autodesk Fusion", "Autodesk Fusion 360", "Fusion360"])
         elif self.id == "kicad":
